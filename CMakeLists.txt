@@ -14,11 +14,16 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.10)
-project(merlin-hkvs LANGUAGES CXX CUDA)
-find_package(CUDAToolkit)
+project(merlin-hkvs LANGUAGES CXX HIP)
+find_package(HIP REQUIRED)
 
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CUDA_STANDARD 14)
+add_definitions(-D__HIPCC__=1)
+add_definitions(-D__HIP__=1)
+add_definitions(-D__HIP_CLANG_ONLY__=1)
+add_compile_definitions(DCU_ASM)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 17)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/modules)
 
 option(CLANGFORMAT "Clangformat code files before compiling" OFF)
@@ -64,14 +69,13 @@ endif()
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_compile_definitions(CUDA_ERROR_CHECK)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
 endif()
 
 foreach(cuda_arch ${cuda_arch_list})
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${cuda_arch},code=sm_${cuda_arch}")
+  set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -g -O0 -w -mllvm -nv-ptx-asm-transform=true  -finline-asm-ptx --offload-arch=gfx906 --offload-arch=gfx926 --offload-arch=gfx928 --offload-arch=gfx936 --offload-arch=gfx938 --gpu-max-threads-per-block=1024")
 endforeach()
 
-message(CMAKE_CUDA_FLAGS="${CMAKE_CUDA_FLAGS}")
+message(CMAKE_HIP_FLAGS="${CMAKE_HIP_FLAGS}")
 
 include_directories(
   ${PROJECT_SOURCE_DIR}/include
@@ -91,90 +95,90 @@ file(GLOB_RECURSE merlin_hkvs_src RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.cpp *.c
 # target_link_libraries(hierarchical_kv PUBLIC ...)
 
 
-add_executable(merlin_hashtable_benchmark benchmark/merlin_hashtable_benchmark.cc.cu)
+add_executable(merlin_hashtable_benchmark benchmark/merlin_hashtable_benchmark.cc.hip)
 target_compile_features(merlin_hashtable_benchmark PUBLIC cxx_std_14)
 set_target_properties(merlin_hashtable_benchmark PROPERTIES  CUDA_ARCHITECTURES OFF)
 
-add_executable(find_with_missed_keys_benchmark benchmark/find_with_missed_keys_benchmark.cc.cu)
+add_executable(find_with_missed_keys_benchmark benchmark/find_with_missed_keys_benchmark.cc.hip)
 target_compile_features(find_with_missed_keys_benchmark PUBLIC cxx_std_14)
 set_target_properties(find_with_missed_keys_benchmark PROPERTIES  CUDA_ARCHITECTURES OFF)
 
-add_executable(merlin_hashtable_test tests/merlin_hashtable_test.cc.cu)
+add_executable(merlin_hashtable_test tests/merlin_hashtable_test.cc.hip)
 target_compile_features(merlin_hashtable_test PUBLIC cxx_std_14)
 set_target_properties(merlin_hashtable_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(merlin_hashtable_test gtest_main)
 
-add_executable(find_or_insert_test tests/find_or_insert_test.cc.cu)
+add_executable(find_or_insert_test tests/find_or_insert_test.cc.hip)
 target_compile_features(find_or_insert_test PUBLIC cxx_std_14)
 set_target_properties(find_or_insert_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(find_or_insert_test gtest_main)
 
-add_executable(merlin_memory_pool_test tests/memory_pool_test.cc.cu)
+add_executable(merlin_memory_pool_test tests/memory_pool_test.cc.hip)
 target_compile_features(merlin_memory_pool_test PUBLIC cxx_std_14)
 set_target_properties(merlin_memory_pool_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(merlin_memory_pool_test gtest_main)
 
 set(CMAKE_BUILD_TYPE "Debug")
-add_executable(save_and_load_test tests/save_and_load_test.cc.cu)
+add_executable(save_and_load_test tests/save_and_load_test.cc.hip)
 target_compile_features(save_and_load_test PUBLIC cxx_std_14)
 set_target_properties(save_and_load_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(save_and_load_test gtest_main)
 
-add_executable(insert_and_evict_test tests/insert_and_evict_test.cc.cu)
+add_executable(insert_and_evict_test tests/insert_and_evict_test.cc.hip)
 target_compile_features(insert_and_evict_test PUBLIC cxx_std_14)
 set_target_properties(insert_and_evict_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(insert_and_evict_test gtest_main)
 
-add_executable(dynamic_max_capacity_test tests/dynamic_max_capacity_test.cc.cu)
+add_executable(dynamic_max_capacity_test tests/dynamic_max_capacity_test.cc.hip)
 target_compile_features(dynamic_max_capacity_test PUBLIC cxx_std_14)
 set_target_properties(dynamic_max_capacity_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(dynamic_max_capacity_test gtest_main)
 
-add_executable(group_lock_test tests/group_lock_test.cc.cu)
+add_executable(group_lock_test tests/group_lock_test.cc.hip)
 target_compile_features(group_lock_test PUBLIC cxx_std_14)
 set_target_properties(group_lock_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(group_lock_test gtest_main)
 
-add_executable(find_or_insert_ptr_test tests/find_or_insert_ptr_test.cc.cu)
+add_executable(find_or_insert_ptr_test tests/find_or_insert_ptr_test.cc.hip)
 target_compile_features(find_or_insert_ptr_test PUBLIC cxx_std_14)
 set_target_properties(find_or_insert_ptr_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(find_or_insert_ptr_test gtest_main)
 
-add_executable(assign_score_test tests/assign_score_test.cc.cu)
+add_executable(assign_score_test tests/assign_score_test.cc.hip)
 target_compile_features(assign_score_test PUBLIC cxx_std_14)
 set_target_properties(assign_score_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(assign_score_test gtest_main)
 
-add_executable(accum_or_assign_test tests/accum_or_assign_test.cc)
+add_executable(accum_or_assign_test tests/accum_or_assign_test.cc.hip)
 target_compile_features(accum_or_assign_test PUBLIC cxx_std_14)
 set_target_properties(accum_or_assign_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(accum_or_assign_test gtest_main)
 
-add_executable(assign_values_test tests/assign_values_test.cc.cu)
+add_executable(assign_values_test tests/assign_values_test.cc.hip)
 target_compile_features(assign_values_test PUBLIC cxx_std_14)
 set_target_properties(assign_values_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(assign_values_test gtest_main)
 
-add_executable(find_with_missed_keys_test tests/find_with_missed_keys_test.cc.cu)
+add_executable(find_with_missed_keys_test tests/find_with_missed_keys_test.cc.hip)
 target_compile_features(find_with_missed_keys_test PUBLIC cxx_std_14)
 set_target_properties(find_with_missed_keys_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(find_with_missed_keys_test gtest_main)
 
-add_executable(reserved_keys_test tests/reserved_keys_test.cc.cu)
+add_executable(reserved_keys_test tests/reserved_keys_test.cc.hip)
 target_compile_features(reserved_keys_test PUBLIC cxx_std_14)
 set_target_properties(reserved_keys_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(reserved_keys_test gtest_main)
 
-add_executable(export_batch_if_test tests/export_batch_if_test.cc.cu)
+add_executable(export_batch_if_test tests/export_batch_if_test.cc.hip)
 target_compile_features(export_batch_if_test PUBLIC cxx_std_14)
 set_target_properties(export_batch_if_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 
-add_executable(find_or_insert_ptr_lock_test tests/find_or_insert_ptr_lock_test.cc.cu)
+add_executable(find_or_insert_ptr_lock_test tests/find_or_insert_ptr_lock_test.cc.hip)
 target_compile_features(find_or_insert_ptr_lock_test PUBLIC cxx_std_14)
 set_target_properties(find_or_insert_ptr_lock_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(find_or_insert_ptr_lock_test gtest_main)
 
-add_executable(lock_unlock_test tests/lock_unlock_test.cc.cu)
+add_executable(lock_unlock_test tests/lock_unlock_test.cc.hip)
 target_compile_features(lock_unlock_test PUBLIC cxx_std_14)
 set_target_properties(lock_unlock_test PROPERTIES  CUDA_ARCHITECTURES OFF)
 TARGET_LINK_LIBRARIES(lock_unlock_test gtest_main)

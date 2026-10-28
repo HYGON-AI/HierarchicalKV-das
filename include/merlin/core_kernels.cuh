@@ -810,7 +810,6 @@ __global__ void remove_kernel_v2(const uint64_t search_length,
       match = false;
     }
     unsigned long long vote = g.ballot(match);
-    // uint32_t vote = tile_ballot<GroupSize>(g, match);
     int group_cnt = __popc(vote);
     if (g.thread_rank() == 0) {
       atomicAdd(remove_counter, static_cast<uint64_t>(group_cnt));

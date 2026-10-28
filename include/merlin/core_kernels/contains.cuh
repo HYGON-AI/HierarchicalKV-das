@@ -176,7 +176,6 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
           }
         }
         found_vote = GROUP_BALLOT(found);
-        // found_vote = tile_ballot<GROUP_SIZE>(g, found);
         if (found_vote) {
           break;
         }

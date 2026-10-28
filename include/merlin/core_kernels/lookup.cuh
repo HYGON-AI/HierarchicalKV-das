@@ -545,7 +545,6 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
           }
         }
         found_vote = g.ballot(found);
-        // found_vote = tile_ballot<GROUP_SIZE>(g, found);
         if (found_vote) {
           break;
         }
