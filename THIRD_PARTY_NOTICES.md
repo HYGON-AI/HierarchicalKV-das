@@ -25,7 +25,7 @@ The unmodified upstream README at the fixed baseline is retained in [README_ORIG
 - Project: ROCm libhipcxx
 - Repository: https://github.com/ROCm/libhipcxx.git
 - Branch: release/2.2.x
-- Baseline commit: branch tip at release time (pin the exact commit before release)
+- Baseline commit: 4d5d918b1f6d85406bc389b8b55be72047228a1c
 - License: Apache-2.0
 - Local paths: `include/cuda/`, `include/hip/`, `include/nv/`
 - Modifications: Integrated for HCU/ROCm compatibility; original copyright and license notices are retained.
