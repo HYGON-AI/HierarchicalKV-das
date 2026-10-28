@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2022, NVIDIA CORPORATION.
  *
@@ -17,7 +18,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cub/cub.cuh>
+#include <hipcub/hipcub.hpp>
 #include "allocator.cuh"
 #include "core_kernels/accum_or_assign.cuh"
 #include "core_kernels/contains.cuh"
@@ -36,7 +37,7 @@ namespace nv {
 namespace merlin {
 
 template <class S>
-__global__ void create_locks(S* __restrict mutex, const size_t start,
+__launch_bounds__(512) __global__ void create_locks(S* __restrict mutex, const size_t start,
                              const size_t end) {
   size_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
   if (start + tid < end) {
@@ -45,7 +46,7 @@ __global__ void create_locks(S* __restrict mutex, const size_t start,
 }
 
 template <class S>
-__global__ void release_locks(S* __restrict mutex, const size_t start,
+__launch_bounds__(1024) __global__ void release_locks(S* __restrict mutex, const size_t start,
                               const size_t end) {
   size_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
   if (start + tid < end) {
@@ -54,7 +55,7 @@ __global__ void release_locks(S* __restrict mutex, const size_t start,
 }
 
 template <class K, class V, class S>
-__global__ void create_atomic_keys(Bucket<K, V, S>* __restrict buckets,
+__launch_bounds__(1024) __global__ void create_atomic_keys(Bucket<K, V, S>* __restrict buckets,
                                    const size_t start, const size_t end,
                                    const size_t bucket_max_size) {
   size_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -68,7 +69,7 @@ __global__ void create_atomic_keys(Bucket<K, V, S>* __restrict buckets,
 }
 
 template <class K, class V, class S>
-__global__ void create_atomic_scores(Bucket<K, V, S>* __restrict buckets,
+__launch_bounds__(1024) __global__ void create_atomic_scores(Bucket<K, V, S>* __restrict buckets,
                                      const size_t start, const size_t end,
                                      const size_t bucket_max_size) {
   size_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -120,12 +121,12 @@ void realloc(P* ptr, size_t old_size, size_t new_size,
   char* new_ptr;
   allocator->alloc(MemoryType::Device, (void**)&new_ptr, new_size);
   if (*ptr != nullptr) {
-    CUDA_CHECK(cudaMemcpy(new_ptr, *ptr, old_size, cudaMemcpyDefault));
+    CUDA_CHECK(hipMemcpy(new_ptr, *ptr, old_size, hipMemcpyDefault));
     allocator->free(MemoryType::Device, *ptr);
   }
 
   // Zero-fill remainder.
-  CUDA_CHECK(cudaMemset(new_ptr + old_size, 0, new_size - old_size));
+  CUDA_CHECK(hipMemset(new_ptr + old_size, 0, new_size - old_size));
 
   // Switch to new pointer.
   *ptr = reinterpret_cast<P>(new_ptr);
@@ -201,27 +202,27 @@ void initialize_buckets(Table<K, V, S>** table, BaseAllocator* allocator,
     } else {
       (*table)->is_pure_hbm = false;
       allocator->alloc(MemoryType::Pinned, (void**)&((*table)->slices[i]),
-                       slice_real_size, cudaHostAllocMapped);
+                       slice_real_size, hipHostMallocMapped);
     }
     for (int j = 0; j < num_of_buckets_in_one_slice; j++) {
       if ((*table)->is_pure_hbm || mixed_hbm) {
         size_t index = start + num_of_allocated_buckets + j;
         V* address =
             (*table)->slices[i] + j * (*table)->bucket_max_size * (*table)->dim;
-        allocate_bucket_vectors<K, V, S>
-            <<<1, 1>>>((*table)->buckets, index, address);
-        CUDA_CHECK(cudaDeviceSynchronize());
+       hipLaunchKernelGGL(( allocate_bucket_vectors<K, V, S>)
+            , dim3(1), dim3(1), 0, 0, (*table)->buckets, index, address);
+        CUDA_CHECK(hipDeviceSynchronize());
       } else {
         V* h_ptr =
             (*table)->slices[i] + j * (*table)->bucket_max_size * (*table)->dim;
         V* address = nullptr;
-        CUDA_CHECK(cudaHostGetDevicePointer(&address, h_ptr, 0));
+        CUDA_CHECK(hipHostGetDevicePointer((void**)&address, (void*)h_ptr, 0));
         size_t index = start + num_of_allocated_buckets + j;
-        allocate_bucket_vectors<K, V, S>
-            <<<1, 1>>>((*table)->buckets, index, address);
+       hipLaunchKernelGGL(( allocate_bucket_vectors<K, V, S>)
+            , dim3(1), dim3(1), 0, 0, (*table)->buckets, index, address);
       }
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(hipDeviceSynchronize());
     num_of_allocated_buckets += num_of_buckets_in_one_slice;
   }
 
@@ -246,26 +247,29 @@ void initialize_buckets(Table<K, V, S>** table, BaseAllocator* allocator,
     uint8_t* address = nullptr;
     size_t num_of_buckets =
         std::min(end - i, (*table)->num_of_buckets_per_alloc);
+    if(0 == (bucket_memory_size * num_of_buckets)){
+      std::cout << "i = " << i << std::endl;
+    }
     allocator->alloc(MemoryType::Device, (void**)&(address),
                      bucket_memory_size * num_of_buckets);
-    allocate_bucket_others<K, V, S>
-        <<<1, 1>>>((*table)->buckets, bucket_memory_size, num_of_buckets, i,
+   hipLaunchKernelGGL(( allocate_bucket_others<K, V, S>)
+        , dim3(1), dim3(1), 0, 0, (*table)->buckets, bucket_memory_size, num_of_buckets, i,
                    address, reserve_size, bucket_max_size);
   }
-  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(hipDeviceSynchronize());
 
   {
     const size_t block_size = 512;
     const size_t N = end - start + 1;
     const int grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-    create_locks<Mutex><<<grid_size, block_size>>>((*table)->locks, start, end);
+   hipLaunchKernelGGL(( create_locks<Mutex>), dim3(grid_size), dim3(block_size), 0, 0, (*table)->locks, start, end);
   }
 
   {
     const size_t block_size = 512;
     const size_t N = end - start + 1;
     const int grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-    create_atomic_keys<K, V, S><<<grid_size, block_size>>>(
+   hipLaunchKernelGGL(( create_atomic_keys<K, V, S>), dim3(grid_size), dim3(block_size), 0, 0, 
         (*table)->buckets, start, end, (*table)->bucket_max_size);
   }
 
@@ -273,10 +277,10 @@ void initialize_buckets(Table<K, V, S>** table, BaseAllocator* allocator,
     const size_t block_size = 512;
     const size_t N = end - start + 1;
     const int grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-    create_atomic_scores<K, V, S><<<grid_size, block_size>>>(
+   hipLaunchKernelGGL(( create_atomic_scores<K, V, S>), dim3(grid_size), dim3(block_size), 0, 0, 
         (*table)->buckets, start, end, (*table)->bucket_max_size);
   }
-  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(hipDeviceSynchronize());
   CudaCheckError();
 }
 
@@ -320,7 +324,7 @@ void create_table(Table<K, V, S>** table, BaseAllocator* allocator,
                   const size_t max_hbm_for_vectors = 0,
                   const size_t bucket_max_size = 128,
                   const size_t num_of_buckets_per_alloc = 1,
-                  const size_t tile_size = 32, const bool primary = true) {
+                  const size_t tile_size = 64, const bool primary = true) {
   allocator->alloc(MemoryType::Host, (void**)table, sizeof(Table<K, V, S>));
   std::memset(*table, 0, sizeof(Table<K, V, S>));
   (*table)->dim = dim;
@@ -351,16 +355,16 @@ void create_table(Table<K, V, S>** table, BaseAllocator* allocator,
   allocator->alloc(MemoryType::Device, (void**)&((*table)->locks),
                    (*table)->buckets_num * sizeof(Mutex));
   CUDA_CHECK(
-      cudaMemset((*table)->locks, 0, (*table)->buckets_num * sizeof(Mutex)));
+      hipMemset((*table)->locks, 0, (*table)->buckets_num * sizeof(Mutex)));
 
   allocator->alloc(MemoryType::Device, (void**)&((*table)->buckets_size),
                    (*table)->buckets_num * sizeof(int));
-  CUDA_CHECK(cudaMemset((*table)->buckets_size, 0,
+  CUDA_CHECK(hipMemset((*table)->buckets_size, 0,
                         (*table)->buckets_num * sizeof(int)));
 
   allocator->alloc(MemoryType::Device, (void**)&((*table)->buckets),
                    (*table)->buckets_num * sizeof(Bucket<K, V, S>));
-  CUDA_CHECK(cudaMemset((*table)->buckets, 0,
+  CUDA_CHECK(hipMemset((*table)->buckets, 0,
                         (*table)->buckets_num * sizeof(Bucket<K, V, S>)));
 
   initialize_buckets<K, V, S>(table, allocator, 0, (*table)->buckets_num);
@@ -391,20 +395,20 @@ void double_capacity(Table<K, V, S>** table, BaseAllocator* allocator) {
 template <class K, class V, class S>
 void destroy_table(Table<K, V, S>** table, BaseAllocator* allocator) {
   uint8_t** d_address = nullptr;
-  CUDA_CHECK(cudaMalloc((void**)&d_address, sizeof(uint8_t*)));
+  CUDA_CHECK(hipMalloc((void**)&d_address, sizeof(uint8_t*)));
   /* NOTICE: Only the buckets which index is the times of
    * `num_of_buckets_per_alloc` will hold a real address, and need to be freed
    */
   for (int i = 0; i < (*table)->buckets_num;
        i += (*table)->num_of_buckets_per_alloc) {
     uint8_t* h_address;
-    get_bucket_others_address<K, V, S>
-        <<<1, 1>>>((*table)->buckets, i, d_address);
-    CUDA_CHECK(cudaMemcpy(&h_address, d_address, sizeof(uint8_t*),
-                          cudaMemcpyDeviceToHost));
+   hipLaunchKernelGGL(( get_bucket_others_address<K, V, S>)
+        , dim3(1), dim3(1), 0, 0, (*table)->buckets, i, d_address);
+    CUDA_CHECK(hipMemcpy(&h_address, d_address, sizeof(uint8_t*),
+                          hipMemcpyDeviceToHost));
     allocator->free(MemoryType::Device, h_address);
   }
-  CUDA_CHECK(cudaFree(d_address));
+  CUDA_CHECK(hipFree(d_address));
 
   for (int i = 0; i < (*table)->num_of_memory_slices; i++) {
     if (is_on_device((*table)->slices[i])) {
@@ -417,15 +421,15 @@ void destroy_table(Table<K, V, S>** table, BaseAllocator* allocator) {
     const size_t block_size = 512;
     const size_t N = (*table)->buckets_num;
     const int grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-    release_locks<Mutex>
-        <<<grid_size, block_size>>>((*table)->locks, 0, (*table)->buckets_num);
+   hipLaunchKernelGGL(( release_locks<Mutex>)
+        , dim3(grid_size), dim3(block_size), 0, 0, (*table)->locks, 0, (*table)->buckets_num);
   }
   allocator->free(MemoryType::Host, (*table)->slices);
   allocator->free(MemoryType::Device, (*table)->buckets_size);
   allocator->free(MemoryType::Device, (*table)->buckets);
   allocator->free(MemoryType::Device, (*table)->locks);
   allocator->free(MemoryType::Host, *table);
-  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(hipDeviceSynchronize());
   CudaCheckError();
 }
 
@@ -487,7 +491,7 @@ __forceinline__ __device__ void move_key_to_new_bucket(
     int* __restrict buckets_size, const size_t bucket_max_size,
     const size_t buckets_num, const size_t dim) {
   uint32_t key_pos;
-  unsigned empty_vote;
+  unsigned long long empty_vote;
   int src_lane;
 
   for (uint32_t tile_offset = 0; tile_offset < bucket_max_size;
@@ -498,7 +502,7 @@ __forceinline__ __device__ void move_key_to_new_bucket(
         (*(new_bucket->keys(key_offset))).load(cuda::std::memory_order_relaxed);
     empty_vote = g.ballot(current_key == static_cast<K>(EMPTY_KEY));
     if (empty_vote) {
-      src_lane = __ffs(empty_vote) - 1;
+      src_lane = __ffsll(empty_vote) - 1;
       key_pos =
           (new_start_idx + tile_offset + src_lane) & (bucket_max_size - 1);
       if (rank == src_lane) {
@@ -623,7 +627,7 @@ __global__ void read_kernel(const V* const* __restrict src, V* __restrict dst,
  *  `N`: Number of vectors needed to be read.
  */
 template <class K, class V, class S>
-__global__ void read_kernel(const V* const* __restrict src, V* __restrict dst,
+__launch_bounds__(1024) __global__ void read_kernel(const V* const* __restrict src, V* __restrict dst,
                             const int* __restrict dst_offset, const size_t dim,
                             const size_t N) {
   size_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -661,7 +665,7 @@ __global__ void clear_kernel(Table<K, V, S>* __restrict table,
 }
 
 /* Remove specified keys. */
-template <class K, class V, class S, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, uint32_t TILE_SIZE = 64>
 __global__ void remove_kernel(const Table<K, V, S>* __restrict table,
                               const K* __restrict keys,
                               Bucket<K, V, S>* __restrict buckets,
@@ -686,7 +690,7 @@ __global__ void remove_kernel(const Table<K, V, S>* __restrict table,
     Bucket<K, V, S>* bucket = get_key_position<K>(
         buckets, find_key, bkt_idx, start_idx, buckets_num, bucket_max_size);
 
-    unsigned found_vote = 0;
+    unsigned long long found_vote = 0;
 #pragma unroll
     for (tile_offset = 0; tile_offset < bucket_max_size;
          tile_offset += TILE_SIZE) {
@@ -706,7 +710,7 @@ __global__ void remove_kernel(const Table<K, V, S>* __restrict table,
     }
 
     if (found_vote) {
-      const int src_lane = __ffs(found_vote) - 1;
+      const int src_lane = __ffsll(found_vote) - 1;
 
       if (g.thread_rank() == src_lane) {
         const int key_pos =
@@ -805,7 +809,8 @@ __global__ void remove_kernel_v2(const uint64_t search_length,
     if (IS_RESERVED_KEY<K>(key)) {
       match = false;
     }
-    uint32_t vote = g.ballot(match);
+    unsigned long long vote = g.ballot(match);
+    // uint32_t vote = tile_ballot<GroupSize>(g, match);
     int group_cnt = __popc(vote);
     if (g.thread_rank() == 0) {
       atomicAdd(remove_counter, static_cast<uint64_t>(group_cnt));
@@ -841,7 +846,7 @@ inline std::tuple<size_t, size_t> dump_kernel_shared_memory_size(
 }
 
 template <class K, class V, class S>
-__global__ void dump_kernel(const Table<K, V, S>* __restrict table,
+__launch_bounds__(1024) __global__ void dump_kernel(const Table<K, V, S>* __restrict table,
                             Bucket<K, V, S>* buckets, K* d_key,
                             V* __restrict d_val, S* __restrict d_score,
                             const size_t offset, const size_t search_length,
@@ -1051,7 +1056,7 @@ __global__ void dump_kernel(const uint64_t search_length, const uint64_t offset,
     const V* value = bucket->vectors + key_idx * dim;
 
     bool match = pred.template operator()<GroupSize>(key, value, score, g);
-    uint32_t vote = g.ballot(match);
+    unsigned long long vote = g.ballot(match);
     int group_cnt = __popc(vote);
     uint64_t group_offset = 0;
     if (g.thread_rank() == 0) {
@@ -1204,8 +1209,8 @@ __global__ void compact_key_value_score_kernel(
       is_existed = true;
     }
   }
-  unsigned int vote = g.ballot(is_existed);
-  unsigned int r_vote = __brev(vote) >> (32 - TILE_SIZE);
+  unsigned long long vote = g.ballot(is_existed);
+  unsigned long long r_vote = __brevll(vote) >> (64 - TILE_SIZE);
   K empty_key = (K)EMPTY_KEY;
   Tidx bias;
   if (is_existed) {
@@ -1285,13 +1290,13 @@ __global__ void lock_kernel_with_filter(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = bucket_keys_ptr[possible_pos];
@@ -1306,7 +1311,7 @@ __global__ void lock_kernel_with_filter(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -1350,9 +1355,9 @@ template <typename KeyT, typename ValueT>
 struct SortPairOp {
   SortPairOp() : d_temp_storage(nullptr), temp_storage_bytes(0) {}
 
-  size_t get_storage_bytes(int batch, cudaStream_t stream) {
+  size_t get_storage_bytes(int batch, hipStream_t stream) {
     num_items = batch;
-    cub::DeviceRadixSort::SortPairs<KeyT, ValueT>(
+    hipcub::DeviceRadixSort::SortPairs<KeyT, ValueT>(
         d_temp_storage, temp_storage_bytes, nullptr, nullptr, nullptr, nullptr,
         num_items, 0, sizeof(KeyT) * 8, stream);
 
@@ -1363,11 +1368,11 @@ struct SortPairOp {
 
   void sort(int batch, KeyT const* d_keys_in, KeyT* d_keys_out,
             ValueT const* d_values_in, ValueT* d_values_out,
-            cudaStream_t stream) {
+            hipStream_t stream) {
     if (batch != num_items) {
       throw std::runtime_error("Number of items is not matched when sort.");
     }
-    cub::DeviceRadixSort::SortPairs(
+    hipcub::DeviceRadixSort::SortPairs(
         d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in,
         d_values_out, num_items, 0, sizeof(KeyT) * 8, stream);
   }
@@ -1383,23 +1388,23 @@ struct SumOp {
   using OutputIteratorT = OutputT*;
   SumOp() : d_temp_storage(nullptr), temp_storage_bytes(0) {}
 
-  size_t get_storage_bytes(int batch, cudaStream_t stream) {
+  size_t get_storage_bytes(int batch, hipStream_t stream) {
     num_items = batch;
-    cub::DeviceReduce::Reduce<InputIteratorT, OutputIteratorT>(
+    hipcub::DeviceReduce::Reduce<InputIteratorT, OutputIteratorT>(
         d_temp_storage, temp_storage_bytes, nullptr, nullptr, num_items,
-        cub::Sum(), 0, stream);
+        hipcub::Sum(), 0, stream);
     return temp_storage_bytes;
   }
 
   void set_storage(void* storage) { d_temp_storage = storage; }
 
   void sum(int batch, InputIteratorT d_in, OutputIteratorT d_out,
-           cudaStream_t stream) {
+           hipStream_t stream) {
     if (batch != num_items) {
       throw std::runtime_error("Number of items is not matched when sum.");
     }
-    cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_in, d_out,
-                              num_items, cub::Sum(), 0, stream);
+    hipcub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_in, d_out,
+                              num_items, hipcub::Sum(), 0, stream);
   }
 
   void* d_temp_storage{nullptr};

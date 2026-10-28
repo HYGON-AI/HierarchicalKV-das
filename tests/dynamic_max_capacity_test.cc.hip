@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -53,8 +54,8 @@ void test_dynamic_max_capcity_table() {
 
   using Vec_t = test_util::ValueArray<f32, dim>;
   std::map<i64, Vec_t> ref_map;
-  cudaStream_t stream;
-  CUDA_CHECK(cudaStreamCreate(&stream));
+  hipStream_t stream;
+  CUDA_CHECK(hipStreamCreate(&stream));
 
   std::unique_ptr<Table> table = std::make_unique<Table>();
   table->init(opt);
@@ -74,7 +75,7 @@ void test_dynamic_max_capcity_table() {
     offset += len;
     total_len += len;
     evict_buffer.SyncData(/*h2d=*/false, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     for (size_t i = 0; i < n_evicted; i++) {
       Vec_t* vec =
           reinterpret_cast<Vec_t*>(evict_buffer.values_ptr(false) + i * dim);
@@ -113,7 +114,7 @@ void test_dynamic_max_capcity_table() {
         table->export_batch(search_len, offset, buffer.keys_ptr(),
                             buffer.values_ptr(), /*scores=*/nullptr, stream);
     buffer.SyncData(/*h2d=*/false);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     for (size_t i = 0; i < n_exported; i++) {
       Vec_t* vec = reinterpret_cast<Vec_t*>(buffer.values_ptr(false) + i * dim);
       for (size_t j = 0; j < dim; j++) {

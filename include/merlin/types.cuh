@@ -18,8 +18,8 @@
 
 #include <stddef.h>
 #include <cstdint>
-#include <cuda/atomic>
-#include <cuda/std/semaphore>
+#include <hip/atomic>
+#include <hip/std/semaphore>
 #include "debug.hpp"
 
 namespace nv {
@@ -77,11 +77,11 @@ __forceinline__ __device__ bool IS_VACANT_KEY(K key) {
   return (VACANT_KEY_MASK_1 & key) == VACANT_KEY_MASK_2;
 }
 
-static cudaError_t init_reserved_keys(int index) {
+static hipError_t init_reserved_keys(int index) {
   if (index < 1 || index > MAX_RESERVED_KEY_BIT) {
     // index = 0 is the default,
     // index = 62 is the maximum index can be set for reserved keys.
-    return cudaSuccess;
+    return hipSuccess;
   }
   uint64_t reservedKeyMask1 = ~(UINT64_C(3) << index);
   uint64_t reservedKeyMask2 = reservedKeyMask1 & ~UINT64_C(1);
@@ -93,19 +93,19 @@ static cudaError_t init_reserved_keys(int index) {
   uint64_t lockedKey = emptyKey & ~(UINT64_C(2) << index);
   EMPTY_KEY_CPU = emptyKey;
 
-  CUDA_CHECK(cudaMemcpyToSymbol(EMPTY_KEY, &emptyKey, sizeof(uint64_t)));
-  CUDA_CHECK(cudaMemcpyToSymbol(RECLAIM_KEY, &reclaimKey, sizeof(uint64_t)));
-  CUDA_CHECK(cudaMemcpyToSymbol(LOCKED_KEY, &lockedKey, sizeof(uint64_t)));
+  CUDA_CHECK(hipMemcpyToSymbol(EMPTY_KEY, &emptyKey, sizeof(uint64_t)));
+  CUDA_CHECK(hipMemcpyToSymbol(RECLAIM_KEY, &reclaimKey, sizeof(uint64_t)));
+  CUDA_CHECK(hipMemcpyToSymbol(LOCKED_KEY, &lockedKey, sizeof(uint64_t)));
 
-  CUDA_CHECK(cudaMemcpyToSymbol(RESERVED_KEY_MASK_1, &reservedKeyMask1,
+  CUDA_CHECK(hipMemcpyToSymbol(RESERVED_KEY_MASK_1, &reservedKeyMask1,
                                 sizeof(uint64_t)));
-  CUDA_CHECK(cudaMemcpyToSymbol(RESERVED_KEY_MASK_2, &reservedKeyMask2,
+  CUDA_CHECK(hipMemcpyToSymbol(RESERVED_KEY_MASK_2, &reservedKeyMask2,
                                 sizeof(uint64_t)));
   CUDA_CHECK(
-      cudaMemcpyToSymbol(VACANT_KEY_MASK_1, &vacantKeyMask1, sizeof(uint64_t)));
+      hipMemcpyToSymbol(VACANT_KEY_MASK_1, &vacantKeyMask1, sizeof(uint64_t)));
   CUDA_CHECK(
-      cudaMemcpyToSymbol(VACANT_KEY_MASK_2, &vacantKeyMask2, sizeof(uint64_t)));
-  return cudaGetLastError();
+      hipMemcpyToSymbol(VACANT_KEY_MASK_2, &vacantKeyMask2, sizeof(uint64_t)));
+  return hipGetLastError();
 }
 
 template <class K>
@@ -150,7 +150,7 @@ struct Bucket {
   static __forceinline__ __device__ D* digests(K* keys,
                                                uint32_t bucket_capacity,
                                                uint32_t offset) {
-    bucket_capacity = umax(bucket_capacity, 128);
+    bucket_capacity = max(bucket_capacity, 128);
     return reinterpret_cast<D*>(keys) - bucket_capacity + offset;
   }
 

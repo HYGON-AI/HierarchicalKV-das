@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -94,13 +95,13 @@ __global__ void find_or_insert_ptr_kernel_lock_key(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -125,7 +126,7 @@ __global__ void find_or_insert_ptr_kernel_lock_key(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -309,7 +310,7 @@ __global__ void find_ptr_or_insert_kernel(
             start_idx, key_pos, src_lane, bucket_max_size);
       }
 
-      occupy_result = g.shfl(occupy_result, src_lane);
+      occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
     } while (occupy_result == OccupyResult::CONTINUE);
 
     if ((occupy_result == OccupyResult::OCCUPIED_EMPTY ||
@@ -340,33 +341,33 @@ struct SelectFindOrInsertPtrKernel {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              V** __restrict values, S* __restrict scores,
                              bool* __restrict found, const S global_epoch) {
     if (load_factor <= 0.5) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, found, global_epoch, N);
     } else if (load_factor <= 0.875) {
-      const unsigned int tile_size = 8;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, found, global_epoch, N);
     } else {
-      const unsigned int tile_size = 32;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( find_ptr_or_insert_kernel<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, found, global_epoch, N);
     }

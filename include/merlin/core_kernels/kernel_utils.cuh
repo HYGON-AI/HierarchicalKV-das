@@ -16,18 +16,29 @@
 
 #pragma once
 
-#include <cooperative_groups.h>
-#include <cooperative_groups/reduce.h>
-#include <cuda_pipeline.h>
-#include <cuda/barrier>
+#include <hip/hip_cooperative_groups.h>
+#include <hip/barrier>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include "../types.cuh"
 #include "../utils.cuh"
+#include "util.h"
 
 using namespace cooperative_groups;
 namespace cg = cooperative_groups;
+
+template<typename T>
+__device__ T warp_reduce_min(T val) {
+    const int warp_size = 64;
+    
+    for (int offset = warp_size / 2; offset > 0; offset >>= 1) {
+        T other = __shfl_down(val, offset, warp_size);
+        val = min(val, other);
+    }
+    
+    return __shfl(val, 0, warp_size);
+}
 
 namespace nv {
 namespace merlin {
@@ -42,7 +53,7 @@ __forceinline__ __device__ T* __shfl_sync_ptr(uint32_t mask, T* var,
                                               int srcLane,
                                               int width = warpSize) {
   uint64_t var64 = reinterpret_cast<uint64_t>(var);
-  var64 = __shfl_sync(mask, var64, srcLane, width);
+  var64 = __shfl( var64, srcLane, width);
   return reinterpret_cast<T*>(var64);
 }
 
@@ -138,7 +149,7 @@ struct CopyScoreByPassCache {
   __forceinline__ __device__ static S lgs(const S* src) { return src[0]; }
 
   __forceinline__ __device__ static void stg(S* dst, const S score_) {
-    __stcs(dst, score_);
+    *dst = score_;
   }
 };
 
@@ -155,7 +166,7 @@ struct CopyValueOneGroup {
     int offset = rank;
     if (offset < dim) {
       VecV vec_v = src[offset];
-      __stcs(dst + offset, vec_v);
+      *(dst + offset) = vec_v;
     }
   }
 };
@@ -176,11 +187,11 @@ struct CopyValueTwoGroup {
                                                  const int dim) {
     int offset = rank;
     const VecV vec_v = src[offset];
-    __stcs(dst + offset, vec_v);
+    *(dst + offset) = vec_v;
     offset += GROUP_SIZE;
     if (offset < dim) {
       const VecV vec_v = src[offset];
-      __stcs(dst + offset, vec_v);
+      *(dst + offset) = vec_v;
     }
   }
 };
@@ -200,7 +211,7 @@ struct CopyValueMultipleGroup {
                                                  const int dim) {
     for (int offset = rank; offset < dim; offset += GROUP_SIZE) {
       VecV vec_v = src[offset];
-      __stcs(dst + offset, vec_v);
+      *(dst + offset) = vec_v;
     }
   }
 
@@ -208,8 +219,8 @@ struct CopyValueMultipleGroup {
                                                  const VecV* src,
                                                  const int dim) {
     for (int offset = rank; offset < dim; offset += GROUP_SIZE) {
-      VecV vec_v = __ldcs(src + offset);
-      __stcs(dst + offset, vec_v);
+      VecV vec_v = *(src + offset);
+      *(dst + offset) = vec_v;
     }
   }
 };
@@ -220,9 +231,9 @@ __forceinline__ __device__ void evict_key_score(K* evicted_keys,
                                                 const uint32_t evict_idx,
                                                 const K& key, const S& score) {
   // Cache with evict_first strategy.
-  __stcs(evicted_keys + evict_idx, key);
+  *(evicted_keys + evict_idx) = key;
   if (evicted_scores != nullptr) {
-    __stcs(evicted_scores + evict_idx, score);
+    *(evicted_scores + evict_idx) = score;
   }
 };
 
@@ -279,8 +290,8 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kLru> {
     D* dst_digest_ptr =
         BUCKET::digests(bucket_key_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_digest_ptr, digest);
-    __stcg(dst_score_ptr, device_nano<S>());
+    *dst_digest_ptr = digest;
+    *dst_score_ptr = device_nano<S>();
     return;
   }
 
@@ -300,7 +311,7 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kLru> {
     S* dst_score_ptr =
         BUCKET::scores(bucket_keys_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_score_ptr, device_nano<S>());
+    *dst_score_ptr = device_nano<S>();
   }
 };
 
@@ -344,11 +355,11 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kLfu> {
     D* dst_digest_ptr =
         BUCKET::digests(bucket_key_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_digest_ptr, digest);
+    *dst_digest_ptr = digest;
     if (new_insert) {
-      __stcg(dst_score_ptr, input_scores[key_idx]);
+      *dst_score_ptr = input_scores[key_idx]; 
     } else {
-      __stcg(dst_score_ptr, input_scores[key_idx] + *dst_score_ptr);
+      *dst_score_ptr = input_scores[key_idx] + *dst_score_ptr;
     }
     return;
   }
@@ -371,7 +382,7 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kLfu> {
     S* dst_score_ptr =
         BUCKET::scores(bucket_keys_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_score_ptr, input_scores[key_idx] + *dst_score_ptr);
+    *dst_score_ptr = input_scores[key_idx] + *dst_score_ptr;
   }
 };
 
@@ -411,8 +422,8 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kEpochLru> {
     D* dst_digest_ptr =
         BUCKET::digests(bucket_key_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_digest_ptr, digest);
-    __stcg(dst_score_ptr, desired_score_when_missed);
+    *dst_digest_ptr = digest;
+    *dst_score_ptr = desired_score_when_missed;
     return;
   }
 
@@ -432,7 +443,7 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kEpochLru> {
     S* dst_score_ptr =
         BUCKET::scores(bucket_keys_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_score_ptr, make_epoch<S>(epoch) | make_nano<S>());
+    *dst_score_ptr = make_epoch<S>(epoch) | make_nano<S>();
   }
 };
 
@@ -494,8 +505,8 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kEpochLfu> {
       }
     }
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_digest_ptr, digest);
-    __stcg(dst_score_ptr, new_score);
+    *dst_digest_ptr = digest;
+    *dst_score_ptr = new_score;
     return;
   }
 
@@ -535,7 +546,7 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kEpochLfu> {
       new_score = make_epoch<S>(epoch) | SCORE_32BIT_MAX;
     }
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_score_ptr, new_score);
+    *dst_score_ptr = new_score;
   }
 };
 
@@ -571,8 +582,8 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kCustomized> {
     D* dst_digest_ptr =
         BUCKET::digests(bucket_key_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_digest_ptr, digest);
-    __stcg(dst_score_ptr, desired_score_when_missed);
+    *dst_digest_ptr = digest;
+    *dst_score_ptr = desired_score_when_missed;
     return;
   }
   __forceinline__ __device__ static void update_without_missed(
@@ -593,7 +604,7 @@ struct ScoreFunctor<K, V, S, EvictStrategyInternal::kCustomized> {
     S* dst_score_ptr =
         BUCKET::scores(bucket_keys_ptr, bucket_capacity, key_pos);
     // Cache in L2 cache, bypass L1 Cache.
-    __stcg(dst_score_ptr, input_scores[key_idx]);
+    *dst_score_ptr = input_scores[key_idx];
   }
 };
 
@@ -634,7 +645,7 @@ __device__ __forceinline__ OccupyResult find_without_lock(
 
   AtomicKey<K>* current_key;
 
-  unsigned vote = 0;
+  unsigned long long vote = 0;
 
   for (uint32_t tile_offset = 0; tile_offset < bucket_max_size;
        tile_offset += TILE_SIZE) {
@@ -645,7 +656,7 @@ __device__ __forceinline__ OccupyResult find_without_lock(
     expected_key = current_key->load(cuda::std::memory_order_relaxed);
     vote = g.ballot(desired_key == expected_key);
     if (vote) {
-      src_lane = __ffs(vote) - 1;
+      src_lane = __ffsll(vote) - 1;
       key_pos = g.shfl(key_pos, src_lane);
       return OccupyResult::DUPLICATE;
     }
@@ -655,7 +666,7 @@ __device__ __forceinline__ OccupyResult find_without_lock(
   return OccupyResult::CONTINUE;
 }
 
-template <class K, class V, class S, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, uint32_t TILE_SIZE = 64>
 __device__ __inline__ OccupyResult find_and_lock_when_vacant(
     cg::thread_block_tile<TILE_SIZE> g, Bucket<K, V, S>* __restrict__ bucket,
     const K desired_key, const S desired_score, K& evicted_key,
@@ -672,7 +683,7 @@ __device__ __inline__ OccupyResult find_and_lock_when_vacant(
   S temp_min_score_val = MAX_SCORE;
   int local_min_score_pos = -1;
 
-  unsigned vote = 0;
+  unsigned long long vote = 0;
   bool result = false;
 
   for (uint32_t tile_offset = 0; tile_offset < bucket_max_size;
@@ -689,7 +700,7 @@ __device__ __inline__ OccupyResult find_and_lock_when_vacant(
           cuda::std::memory_order_relaxed, cuda::std::memory_order_relaxed);
       vote = g.ballot(result);
       if (vote) {
-        src_lane = __ffs(vote) - 1;
+        src_lane = tile_ffs<TILE_SIZE>(vote) - 1;
         key_pos = g.shfl(key_pos, src_lane);
         return OccupyResult::DUPLICATE;
       }
@@ -701,7 +712,7 @@ __device__ __inline__ OccupyResult find_and_lock_when_vacant(
 
     // Step 2: (TBD)try find empty location.
     while (vote) {
-      src_lane = __ffs(vote) - 1;
+      src_lane = tile_ffs<TILE_SIZE>(vote) - 1;
       if (src_lane == g.thread_rank()) {
         expected_key = static_cast<K>(EMPTY_KEY);
         result = current_key->compare_exchange_strong(
@@ -719,7 +730,7 @@ __device__ __inline__ OccupyResult find_and_lock_when_vacant(
       if (result) {
         return OccupyResult::CONTINUE;
       }
-      vote -= ((unsigned(0x1)) << src_lane);
+      vote &= ~(1ULL << src_lane);
     }
   }
 
@@ -743,14 +754,13 @@ __device__ __inline__ OccupyResult find_and_lock_when_vacant(
     }
   }
   // Step 5: insert by evicting some one.
-  const S global_min_score_val =
-      cg::reduce(g, local_min_score_val, cg::less<S>());
+  const S global_min_score_val = warp_reduce_min(local_min_score_val);
   if (desired_score < global_min_score_val) {
     return OccupyResult::REFUSED;
   }
   vote = g.ballot(local_min_score_val <= global_min_score_val);
   if (vote) {
-    src_lane = __ffs(vote) - 1;
+    src_lane = tile_ffs<TILE_SIZE>(vote) - 1;
     result = false;
     if (src_lane == g.thread_rank()) {
       // TBD: Here can be compare_exchange_weak. Do benchmark.
@@ -800,7 +810,7 @@ __device__ __forceinline__ OccupyResult find_and_lock_when_full(
   S temp_min_score_val = MAX_SCORE;
   int local_min_score_pos = -1;
 
-  unsigned vote = 0;
+  unsigned long long vote = 0;
   bool result = false;
 
   for (uint32_t tile_offset = 0; tile_offset < bucket_max_size;
@@ -817,7 +827,7 @@ __device__ __forceinline__ OccupyResult find_and_lock_when_full(
           cuda::std::memory_order_relaxed);
       vote = g.ballot(result);
       if (vote) {
-        src_lane = __ffs(vote) - 1;
+        src_lane = tile_ffs<TILE_SIZE>(vote) - 1;
         key_pos = g.shfl(key_pos, src_lane);
         return OccupyResult::DUPLICATE;
       }
@@ -843,14 +853,13 @@ __device__ __forceinline__ OccupyResult find_and_lock_when_full(
   }
 
   // Step 3: insert by evicting some one.
-  const S global_min_score_val =
-      cg::reduce(g, local_min_score_val, cg::less<S>());
+  const S global_min_score_val = warp_reduce_min(local_min_score_val);
   if (desired_score < global_min_score_val) {
     return OccupyResult::REFUSED;
   }
   vote = g.ballot(local_min_score_val <= global_min_score_val);
   if (vote) {
-    src_lane = __ffs(vote) - 1;
+    src_lane = tile_ffs<TILE_SIZE>(vote) - 1;
     result = false;
     if (src_lane == g.thread_rank()) {
       // TBD: Here can be compare_exchange_weak. Do benchmark.
@@ -889,7 +898,7 @@ __device__ __forceinline__ OccupyResult find_and_lock_for_update(
 
   AtomicKey<K>* current_key;
 
-  unsigned vote = 0;
+  unsigned long long vote = 0;
   bool result = false;
 
   for (uint32_t tile_offset = 0; tile_offset < bucket_max_size;
@@ -906,7 +915,7 @@ __device__ __forceinline__ OccupyResult find_and_lock_for_update(
           cuda::std::memory_order_relaxed, cuda::std::memory_order_relaxed);
       vote = g.ballot(result);
       if (vote) {
-        src_lane = __ffs(vote) - 1;
+        src_lane = __ffsll(vote) - 1;
         key_pos = g.shfl(key_pos, src_lane);
         return OccupyResult::DUPLICATE;
       }

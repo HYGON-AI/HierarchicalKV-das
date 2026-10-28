@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2022, NVIDIA CORPORATION.
  *
@@ -66,12 +67,12 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
   V* h_vectors;
   bool* h_found;
 
-  CUDA_CHECK(cudaMallocHost(&h_keys, key_num_per_op * sizeof(K)));
-  CUDA_CHECK(cudaMallocHost(&h_scores, key_num_per_op * sizeof(S)));
-  CUDA_CHECK(cudaMallocHost(&h_vectors, key_num_per_op * sizeof(V) * dim));
-  CUDA_CHECK(cudaMallocHost(&h_found, key_num_per_op * sizeof(bool)));
+  CUDA_CHECK(hipHostMalloc(&h_keys, key_num_per_op * sizeof(K)));
+  CUDA_CHECK(hipHostMalloc(&h_scores, key_num_per_op * sizeof(S)));
+  CUDA_CHECK(hipHostMalloc(&h_vectors, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipHostMalloc(&h_found, key_num_per_op * sizeof(bool)));
 
-  CUDA_CHECK(cudaMemset(h_vectors, 0, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipMemset(h_vectors, 0, key_num_per_op * sizeof(V) * dim));
 
   bool need_scores = (Table::evict_strategy == EvictStrategy::kLfu ||
                       Table::evict_strategy == EvictStrategy::kEpochLfu ||
@@ -89,26 +90,26 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
   K* d_evict_keys;
   S* d_evict_scores;
 
-  CUDA_CHECK(cudaMalloc(&d_keys, key_num_per_op * sizeof(K)));
-  CUDA_CHECK(cudaMalloc(&d_scores_real, key_num_per_op * sizeof(S)));
-  CUDA_CHECK(cudaMalloc(&d_vectors, key_num_per_op * sizeof(V) * dim));
-  CUDA_CHECK(cudaMalloc(&d_def_val, key_num_per_op * sizeof(V) * dim));
-  CUDA_CHECK(cudaMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
-  CUDA_CHECK(cudaMalloc(&d_found, key_num_per_op * sizeof(bool)));
-  CUDA_CHECK(cudaMalloc(&d_keys_out, key_num_per_op * sizeof(K)));
+  CUDA_CHECK(hipMalloc(&d_keys, key_num_per_op * sizeof(K)));
+  CUDA_CHECK(hipMalloc(&d_scores_real, key_num_per_op * sizeof(S)));
+  CUDA_CHECK(hipMalloc(&d_vectors, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipMalloc(&d_def_val, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
+  CUDA_CHECK(hipMalloc(&d_found, key_num_per_op * sizeof(bool)));
+  CUDA_CHECK(hipMalloc(&d_keys_out, key_num_per_op * sizeof(K)));
 
-  CUDA_CHECK(cudaMalloc(&d_evict_keys, key_num_per_op * sizeof(K)));
-  CUDA_CHECK(cudaMalloc(&d_evict_scores, key_num_per_op * sizeof(S)));
+  CUDA_CHECK(hipMalloc(&d_evict_keys, key_num_per_op * sizeof(K)));
+  CUDA_CHECK(hipMalloc(&d_evict_scores, key_num_per_op * sizeof(S)));
 
-  CUDA_CHECK(cudaMemset(d_vectors, 1, key_num_per_op * sizeof(V) * dim));
-  CUDA_CHECK(cudaMemset(d_def_val, 2, key_num_per_op * sizeof(V) * dim));
-  CUDA_CHECK(cudaMemset(d_vectors_ptr, 0, key_num_per_op * sizeof(V*)));
-  CUDA_CHECK(cudaMemset(d_found, 0, key_num_per_op * sizeof(bool)));
+  CUDA_CHECK(hipMemset(d_vectors, 1, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipMemset(d_def_val, 2, key_num_per_op * sizeof(V) * dim));
+  CUDA_CHECK(hipMemset(d_vectors_ptr, 0, key_num_per_op * sizeof(V*)));
+  CUDA_CHECK(hipMemset(d_found, 0, key_num_per_op * sizeof(bool)));
 
   d_scores = need_scores ? d_scores_real : nullptr;
 
-  cudaStream_t stream;
-  CUDA_CHECK(cudaStreamCreate(&stream));
+  hipStream_t stream;
+  CUDA_CHECK(hipStreamCreate(&stream));
 
   // initialize insert
   // step 1, no need to load load_factor
@@ -128,21 +129,21 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
     uint64_t key_num_cur_insert =
         global_epoch == loop_num_init - 1 ? key_num_remain : key_num_per_op;
     create_continuous_keys<K, S>(h_keys, h_scores, key_num_cur_insert, start);
-    CUDA_CHECK(cudaMemcpy(d_keys, h_keys, key_num_cur_insert * sizeof(K),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_scores_real, h_scores,
+    CUDA_CHECK(hipMemcpy(d_keys, h_keys, key_num_cur_insert * sizeof(K),
+                          hipMemcpyHostToDevice));
+    CUDA_CHECK(hipMemcpy(d_scores_real, h_scores,
                           key_num_cur_insert * sizeof(S),
-                          cudaMemcpyHostToDevice));
+                          hipMemcpyHostToDevice));
     table->find_or_insert(key_num_cur_insert, d_keys, d_vectors_ptr, d_found,
                           d_scores, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
 
     start += key_num_cur_insert;
   }
 
   // step 2
   float real_load_factor = table->load_factor(stream);
-  CUDA_CHECK(cudaStreamSynchronize(stream));
+  CUDA_CHECK(hipStreamSynchronize(stream));
   while (target_load_factor - real_load_factor > EPSILON) {
     auto key_num_append = static_cast<int64_t>(
         (target_load_factor - real_load_factor) * init_capacity);
@@ -150,16 +151,16 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
     key_num_append =
         std::min(static_cast<int64_t>(key_num_per_op), key_num_append);
     create_continuous_keys<K, S>(h_keys, h_scores, key_num_append, start);
-    CUDA_CHECK(cudaMemcpy(d_keys, h_keys, key_num_append * sizeof(K),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_scores_real, h_scores, key_num_append * sizeof(S),
-                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(hipMemcpy(d_keys, h_keys, key_num_append * sizeof(K),
+                          hipMemcpyHostToDevice));
+    CUDA_CHECK(hipMemcpy(d_scores_real, h_scores, key_num_append * sizeof(S),
+                          hipMemcpyHostToDevice));
     table->insert_or_assign(key_num_append, d_keys, d_vectors, d_scores,
                             stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     start += key_num_append;
     real_load_factor = table->load_factor(stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
   }
 
   // For trigger the kernel selection in advance.
@@ -170,92 +171,92 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       case API_Select::find: {
         table->find(key_num_per_op_warmup, d_keys, d_vectors, d_found, d_scores,
                     stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       case API_Select::insert_or_assign: {
         table->insert_or_assign(key_num_per_op_warmup, d_keys, d_vectors,
                                 d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       case API_Select::find_or_insert: {
         table->find_or_insert(key_num_per_op_warmup, d_keys, d_vectors,
                               d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       case API_Select::assign: {
         table->assign(key_num_per_op_warmup, d_keys, d_def_val, d_scores,
                       stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       case API_Select::insert_and_evict: {
         table->insert_and_evict(key_num_per_op_warmup, d_keys, d_vectors,
                                 d_scores, d_evict_keys, d_def_val,
                                 d_evict_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       case API_Select::find_ptr: {
         V** d_vectors_ptr = nullptr;
         CUDA_CHECK(
-            cudaMalloc(&d_vectors_ptr, key_num_per_op_warmup * sizeof(V*)));
+            hipMalloc(&d_vectors_ptr, key_num_per_op_warmup * sizeof(V*)));
         benchmark::array2ptr(d_vectors_ptr, d_vectors, dim,
                              key_num_per_op_warmup, stream);
 
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         table->find(1, d_keys, d_vectors_ptr, d_found, d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         benchmark::read_from_ptr(d_vectors_ptr, d_vectors, dim,
                                  key_num_per_op_warmup, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK(cudaFree(d_vectors_ptr));
+        CUDA_CHECK(hipStreamSynchronize(stream));
+        CUDA_CHECK(hipFree(d_vectors_ptr));
         break;
       }
       case API_Select::find_or_insert_ptr: {
         V** d_vectors_ptr = nullptr;
         bool* d_found;
-        CUDA_CHECK(cudaMalloc(&d_found, key_num_per_op_warmup * sizeof(bool)));
+        CUDA_CHECK(hipMalloc(&d_found, key_num_per_op_warmup * sizeof(bool)));
         CUDA_CHECK(
-            cudaMalloc(&d_vectors_ptr, key_num_per_op_warmup * sizeof(V*)));
+            hipMalloc(&d_vectors_ptr, key_num_per_op_warmup * sizeof(V*)));
         benchmark::array2ptr(d_vectors_ptr, d_vectors, dim,
                              key_num_per_op_warmup, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         table->find_or_insert(key_num_per_op_warmup, d_keys, d_vectors_ptr,
                               d_found, d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK(cudaFree(d_vectors_ptr));
-        CUDA_CHECK(cudaFree(d_found));
+        CUDA_CHECK(hipStreamSynchronize(stream));
+        CUDA_CHECK(hipFree(d_vectors_ptr));
+        CUDA_CHECK(hipFree(d_found));
         break;
       }
       case API_Select::export_batch: {
         size_t* d_dump_counter = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_dump_counter, sizeof(size_t)));
-        CUDA_CHECK(cudaMemset(d_dump_counter, 0, sizeof(size_t)));
+        CUDA_CHECK(hipMalloc(&d_dump_counter, sizeof(size_t)));
+        CUDA_CHECK(hipMemset(d_dump_counter, 0, sizeof(size_t)));
 
         table->export_batch(key_num_per_op_warmup, 0, d_dump_counter, d_keys,
                             d_vectors, d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK(cudaFree(d_dump_counter));
+        CUDA_CHECK(hipStreamSynchronize(stream));
+        CUDA_CHECK(hipFree(d_dump_counter));
         break;
       }
       case API_Select::export_batch_if: {
         size_t* d_dump_counter = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_dump_counter, sizeof(size_t)));
-        CUDA_CHECK(cudaMemset(d_dump_counter, 0, sizeof(size_t)));
+        CUDA_CHECK(hipMalloc(&d_dump_counter, sizeof(size_t)));
+        CUDA_CHECK(hipMemset(d_dump_counter, 0, sizeof(size_t)));
         K pattern = 0;
         table->template export_batch_if<ExportIfPredFunctor>(
             pattern, threshold, key_num_per_op_warmup, 0, d_dump_counter,
             d_keys, d_vectors, d_scores, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK(cudaFree(d_dump_counter));
+        CUDA_CHECK(hipStreamSynchronize(stream));
+        CUDA_CHECK(hipFree(d_dump_counter));
         break;
       }
       case API_Select::contains: {
         table->contains(1, d_keys, d_found, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
         break;
       }
       default: {
@@ -265,10 +266,10 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
   }
   create_keys_for_hitrate<K, S>(h_keys, h_scores, key_num_per_op, hitrate,
                                 Hit_Mode::last_insert, start, true /*reset*/);
-  CUDA_CHECK(cudaMemcpy(d_keys, h_keys, key_num_per_op * sizeof(K),
-                        cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(d_scores_real, h_scores, key_num_per_op * sizeof(K),
-                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(hipMemcpy(d_keys, h_keys, key_num_per_op * sizeof(K),
+                        hipMemcpyHostToDevice));
+  CUDA_CHECK(hipMemcpy(d_scores_real, h_scores, key_num_per_op * sizeof(K),
+                        hipMemcpyHostToDevice));
   auto timer = benchmark::Timer<double>();
   global_epoch++;
   table->set_global_epoch(global_epoch);
@@ -276,7 +277,7 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
     case API_Select::find: {
       timer.start();
       table->find(key_num_per_op, d_keys, d_vectors, d_found, d_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
@@ -284,7 +285,7 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       timer.start();
       table->insert_or_assign(key_num_per_op, d_keys, d_vectors, d_scores,
                               stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
@@ -292,14 +293,14 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       timer.start();
       table->find_or_insert(key_num_per_op, d_keys, d_vectors, d_scores,
                             stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
     case API_Select::assign: {
       timer.start();
       table->assign(key_num_per_op, d_keys, d_def_val, d_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
@@ -307,43 +308,43 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       timer.start();
       table->insert_and_evict(key_num_per_op, d_keys, d_vectors, d_scores,
                               d_evict_keys, d_def_val, d_evict_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
     case API_Select::find_ptr: {
       V** d_vectors_ptr = nullptr;
-      CUDA_CHECK(cudaMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
+      CUDA_CHECK(hipMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
       benchmark::array2ptr(d_vectors_ptr, d_vectors, dim, key_num_per_op,
                            stream);
 
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.start();
       table->find(key_num_per_op, d_keys, d_vectors_ptr, d_found, d_scores,
                   stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       benchmark::read_from_ptr(d_vectors_ptr, d_vectors, dim, key_num_per_op,
                                stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      CUDA_CHECK(cudaFree(d_vectors_ptr));
+      CUDA_CHECK(hipStreamSynchronize(stream));
+      CUDA_CHECK(hipFree(d_vectors_ptr));
       break;
     }
     case API_Select::find_or_insert_ptr: {
       V** d_vectors_ptr = nullptr;
       bool* d_found;
-      CUDA_CHECK(cudaMalloc(&d_found, key_num_per_op * sizeof(bool)));
-      CUDA_CHECK(cudaMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
+      CUDA_CHECK(hipMalloc(&d_found, key_num_per_op * sizeof(bool)));
+      CUDA_CHECK(hipMalloc(&d_vectors_ptr, key_num_per_op * sizeof(V*)));
       benchmark::array2ptr(d_vectors_ptr, d_vectors, dim, key_num_per_op,
                            stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.start();
       table->find_or_insert(key_num_per_op, d_keys, d_vectors_ptr, d_found,
                             d_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
-      CUDA_CHECK(cudaFree(d_vectors_ptr));
-      CUDA_CHECK(cudaFree(d_found));
+      CUDA_CHECK(hipFree(d_vectors_ptr));
+      CUDA_CHECK(hipFree(d_found));
       break;
     }
     case API_Select::export_batch: {
@@ -353,14 +354,14 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       // It's normal to happen `illegal memory access` error occasionally.
       float safe_ratio = 0.995;
 
-      CUDA_CHECK(cudaMalloc(&d_dump_counter, sizeof(size_t)));
-      CUDA_CHECK(cudaMemset(d_dump_counter, 0, sizeof(size_t)));
+      CUDA_CHECK(hipMalloc(&d_dump_counter, sizeof(size_t)));
+      CUDA_CHECK(hipMemset(d_dump_counter, 0, sizeof(size_t)));
       timer.start();
       table->export_batch(key_num_per_op / target_load_factor * safe_ratio, 0,
                           d_dump_counter, d_keys, d_vectors, d_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
-      CUDA_CHECK(cudaFree(d_dump_counter));
+      CUDA_CHECK(hipFree(d_dump_counter));
       break;
     }
     case API_Select::export_batch_if: {
@@ -370,22 +371,22 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
       // It's normal to happen `illegal memory access` error occasionally.
       float safe_ratio = 0.995;
 
-      CUDA_CHECK(cudaMalloc(&d_dump_counter, sizeof(size_t)));
-      CUDA_CHECK(cudaMemset(d_dump_counter, 0, sizeof(size_t)));
+      CUDA_CHECK(hipMalloc(&d_dump_counter, sizeof(size_t)));
+      CUDA_CHECK(hipMemset(d_dump_counter, 0, sizeof(size_t)));
       timer.start();
       K pattern = 0;
       table->template export_batch_if<ExportIfPredFunctor>(
           pattern, threshold, key_num_per_op / target_load_factor * safe_ratio,
           0, d_dump_counter, d_keys, d_vectors, d_scores, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
-      CUDA_CHECK(cudaFree(d_dump_counter));
+      CUDA_CHECK(hipFree(d_dump_counter));
       break;
     }
     case API_Select::contains: {
       timer.start();
       table->contains(key_num_per_op, d_keys, d_found, stream);
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       timer.end();
       break;
     }
@@ -394,22 +395,22 @@ float test_one_api(std::shared_ptr<Table>& table, const API_Select api,
     }
   }
 
-  CUDA_CHECK(cudaStreamDestroy(stream));
+  CUDA_CHECK(hipStreamDestroy(stream));
 
-  CUDA_CHECK(cudaFreeHost(h_keys));
-  CUDA_CHECK(cudaFreeHost(h_scores));
-  CUDA_CHECK(cudaFreeHost(h_found));
+  CUDA_CHECK(hipHostFree(h_keys));
+  CUDA_CHECK(hipHostFree(h_scores));
+  CUDA_CHECK(hipHostFree(h_found));
 
-  CUDA_CHECK(cudaFree(d_keys));
-  CUDA_CHECK(cudaFree(d_scores_real));
-  CUDA_CHECK(cudaFree(d_vectors));
-  CUDA_CHECK(cudaFree(d_def_val));
-  CUDA_CHECK(cudaFree(d_vectors_ptr));
-  CUDA_CHECK(cudaFree(d_found));
-  CUDA_CHECK(cudaFree(d_evict_keys));
-  CUDA_CHECK(cudaFree(d_evict_scores));
+  CUDA_CHECK(hipFree(d_keys));
+  CUDA_CHECK(hipFree(d_scores_real));
+  CUDA_CHECK(hipFree(d_vectors));
+  CUDA_CHECK(hipFree(d_def_val));
+  CUDA_CHECK(hipFree(d_vectors_ptr));
+  CUDA_CHECK(hipFree(d_found));
+  CUDA_CHECK(hipFree(d_evict_keys));
+  CUDA_CHECK(hipFree(d_evict_scores));
 
-  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(hipDeviceSynchronize());
   CudaCheckError();
 
   float througput =
@@ -474,8 +475,8 @@ void test_main(std::vector<API_Select>& apis, const size_t dim,
                const bool io_by_cpu = false,
                const std::vector<float> load_factors = {0.50f, 0.75f, 1.00f}) {
   size_t free, total;
-  CUDA_CHECK(cudaSetDevice(0));
-  CUDA_CHECK(cudaMemGetInfo(&free, &total));
+  CUDA_CHECK(hipSetDevice(0));
+  CUDA_CHECK(hipMemGetInfo(&free, &total));
 
   if (free / (1 << 30) < hbm4values) {
     std::cout << "free HBM is not enough, ignore current benchmark!"
@@ -500,7 +501,7 @@ void test_main(std::vector<API_Select>& apis, const size_t dim,
 
     for (auto api : apis) {
       table->clear();
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
       // There is a sampling of load_factor after several times call to target
       // API. Two consecutive calls can avoid the impact of sampling.
       auto res1 = test_one_api<Table>(table, api, dim, init_capacity,
@@ -563,8 +564,8 @@ void test_main(std::vector<API_Select>& apis, const size_t dim,
 
 int main() {
   size_t key_num_per_op = 1 * 1024 * 1024UL;
-  cudaDeviceProp props;
-  CUDA_CHECK(cudaGetDeviceProperties(&props, 0));
+  hipDeviceProp_t_v2 props;
+  CUDA_CHECK(hipGetDeviceProperties_v2(&props, 0));
   cout << endl
        << "## Benchmark" << endl
        << endl
@@ -660,10 +661,10 @@ int main() {
       cout << endl;
     }
 
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(hipDeviceSynchronize());
   } catch (const nv::merlin::CudaException& e) {
     cerr << e.what() << endl;
   }
-  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(hipDeviceSynchronize());
   return 0;
 }

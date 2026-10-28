@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -80,13 +81,13 @@ __global__ void tlp_update_score_kernel(Bucket<K, V, S>* __restrict__ buckets,
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -113,7 +114,7 @@ __global__ void tlp_update_score_kernel(Bucket<K, V, S>* __restrict__ buckets,
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -214,7 +215,7 @@ __global__ void pipeline_update_score_kernel(
     VecD_Comp probing_digests = *reinterpret_cast<VecD_Comp*>(
         &sm_digests[groupID][same_buf(i) * BUCKET_SIZE + rank * Comp_LEN]);
     uint32_t find_result_ = __vcmpeq4(probing_digests, target_digests);
-    uint32_t find_result = 0;
+    unsigned long long find_result = 0;
     if ((find_result_ & 0x01) != 0) find_result |= 0x01;
     if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
     if ((find_result_ & 0x010000) != 0) find_result |= 0x04;
@@ -233,11 +234,11 @@ __global__ void pipeline_update_score_kernel(
       group_base = atomicAdd(sm_counts + key_idx_block, find_number);
     }
     bool gt_reserve = (group_base + find_number) > RESERVE;
-    int gt_vote = g.ballot(gt_reserve);
+    unsigned long long gt_vote = g.ballot(gt_reserve);
     K* key_ptr = sm_keys_ptr[key_idx_block];
     if (gt_vote == 0) {
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -256,10 +257,10 @@ __global__ void pipeline_update_score_kernel(
     } else {
       K target_key = sm_target_keys[key_idx_block];
       sm_counts[key_idx_block] = 0;
-      int found_vote = 0;
+      unsigned long long found_vote = 0;
       bool found = false;
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -318,9 +319,9 @@ __global__ void pipeline_update_score_kernel(
           }
         }
       }
-      int found_vote = g.ballot(found_flag);
+      unsigned long long found_vote = g.ballot(found_flag);
       if (found_vote) {
-        int src_lane = __ffs(found_vote) - 1;
+        int src_lane = __ffsll(found_vote) - 1;
         int target_pos = g.shfl(key_pos, src_lane);
         sm_position[key_idx_block] = target_pos;
       }
@@ -388,9 +389,9 @@ __global__ void pipeline_update_score_kernel(
         }
       }
     }
-    int found_vote = g.ballot(found_flag);
+    unsigned long long found_vote = g.ballot(found_flag);
     if (found_vote) {
-      int src_lane = __ffs(found_vote) - 1;
+      int src_lane = __ffsll(found_vote) - 1;
       int target_pos = g.shfl(key_pos, src_lane);
       sm_position[key_idx_block] = target_pos;
     }
@@ -477,10 +478,10 @@ struct Params_UpdateScore {
 template <typename K, typename V, typename S, int Strategy>
 struct Launch_TLP_UpdateScore {
   using Params = Params_UpdateScore<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
-    tlp_update_score_kernel<K, V, S, BLOCK_SIZE, Strategy>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+   hipLaunchKernelGGL(( tlp_update_score_kernel<K, V, S, BLOCK_SIZE, Strategy>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             params.buckets, params.buckets_num, params.bucket_capacity,
             params.keys, params.scores, params.n, params.global_epoch);
   }
@@ -489,12 +490,12 @@ struct Launch_TLP_UpdateScore {
 template <typename K, typename V, typename S, int Strategy>
 struct Launch_Pipeline_UpdateScore {
   using Params = Params_UpdateScore<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
-    constexpr uint32_t GROUP_SIZE = 16;
+    constexpr uint32_t GROUP_SIZE = 64;
 
-    pipeline_update_score_kernel<K, V, S, BLOCK_SIZE, GROUP_SIZE, Strategy>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+   hipLaunchKernelGGL(( pipeline_update_score_kernel<K, V, S, BLOCK_SIZE, GROUP_SIZE, Strategy>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             params.buckets, params.buckets_num, params.keys, params.scores,
             params.n, params.global_epoch);
   }
@@ -509,7 +510,7 @@ struct KernelSelector_UpdateScore {
     return (unique_key && bucket_size >= MinBucketCap);
   }
 
-  static void select_kernel(Params& params, cudaStream_t& stream) {
+  static void select_kernel(Params& params, hipStream_t& stream) {
     // This part is according to the test on A100.
     if (params.bucket_capacity != 128) {
       Launch_TLP_UpdateScore<K, V, S, Strategy>::launch_kernel(params, stream);
@@ -518,8 +519,8 @@ struct KernelSelector_UpdateScore {
         Launch_TLP_UpdateScore<K, V, S, Strategy>::launch_kernel(params,
                                                                  stream);
       } else {
-        Launch_Pipeline_UpdateScore<K, V, S, Strategy>::launch_kernel(params,
-                                                                      stream);
+        Launch_TLP_UpdateScore<K, V, S, Strategy>::launch_kernel(params,
+                                                                 stream);
       }
     }
   }  // End function
@@ -567,7 +568,7 @@ __global__ void update_score_kernel(const Table<K, V, S>* __restrict table,
     occupy_result = find_and_lock_for_update<K, V, S, TILE_SIZE>(
         g, bucket, update_key, start_idx, key_pos, src_lane, bucket_max_size);
 
-    occupy_result = g.shfl(occupy_result, src_lane);
+    occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
 
     if (occupy_result == OccupyResult::REFUSED) continue;
 
@@ -589,25 +590,25 @@ template <typename K, typename V, typename S, int Strategy>
 struct SelectUpdateScoreKernel {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
-                             const size_t buckets_num, cudaStream_t& stream,
+                             const size_t buckets_num, hipStream_t& stream,
                              const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              const S* __restrict scores, const S global_epoch) {
     if (load_factor <= 0.75) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      update_score_kernel<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(table, buckets,
+     hipLaunchKernelGGL(( update_score_kernel<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, table, buckets,
                                                  bucket_max_size, buckets_num,
                                                  keys, scores, global_epoch, N);
     } else {
-      const unsigned int tile_size = 32;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      update_score_kernel<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(table, buckets,
+     hipLaunchKernelGGL(( update_score_kernel<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, table, buckets,
                                                  bucket_max_size, buckets_num,
                                                  keys, scores, global_epoch, N);
     }

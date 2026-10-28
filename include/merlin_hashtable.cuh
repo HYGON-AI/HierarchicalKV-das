@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2022, NVIDIA CORPORATION.
  *
@@ -21,7 +22,7 @@
 #include <thrust/sort.h>
 #include <atomic>
 #include <cstdint>
-#include <cub/cub.cuh>
+#include <hipcub/hipcub.hpp>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -167,9 +168,9 @@ using EraseIfPredict = bool (*)(
 );
 
 #if THRUST_VERSION >= 101600
-static constexpr auto& thrust_par = thrust::cuda::par_nosync;
+static constexpr auto& thrust_par = thrust::hip::par_nosync;
 #else
-static constexpr auto& thrust_par = thrust::cuda::par;
+static constexpr auto& thrust_par = thrust::hip::par;
 #endif
 
 template <typename K, typename V, typename S = uint64_t>
@@ -229,7 +230,7 @@ class HashTableBase {
                                 const key_type* keys,                // (n)
                                 const value_type* values,            // (n, DIM)
                                 const score_type* scores = nullptr,  // (n)
-                                cudaStream_t stream = 0, bool unique_key = true,
+                                hipStream_t stream = 0, bool unique_key = true,
                                 bool ignore_evict_strategy = false) = 0;
 
   /**
@@ -285,7 +286,7 @@ class HashTableBase {
                                 value_type* evicted_values,    // (n, DIM)
                                 score_type* evicted_scores,    // (n)
                                 size_type* d_evicted_counter,  // (1)
-                                cudaStream_t stream = 0, bool unique_key = true,
+                                hipStream_t stream = 0, bool unique_key = true,
                                 bool ignore_evict_strategy = false) = 0;
 
   /**
@@ -339,7 +340,7 @@ class HashTableBase {
                                      key_type* evicted_keys,      // (n)
                                      value_type* evicted_values,  // (n, DIM)
                                      score_type* evicted_scores,  // (n)
-                                     cudaStream_t stream = 0,
+                                     hipStream_t stream = 0,
                                      bool unique_key = true,
                                      bool ignore_evict_strategy = false) = 0;
 
@@ -388,7 +389,7 @@ class HashTableBase {
                                const value_type* value_or_deltas,   // (n, DIM)
                                const bool* accum_or_assigns,        // (n)
                                const score_type* scores = nullptr,  // (n)
-                               cudaStream_t stream = 0,
+                               hipStream_t stream = 0,
                                bool ignore_evict_strategy = false) = 0;
 
   /**
@@ -411,7 +412,7 @@ class HashTableBase {
   virtual void find_or_insert(const size_type n, const key_type* keys,  // (n)
                               value_type* values,            // (n * DIM)
                               score_type* scores = nullptr,  // (n)
-                              cudaStream_t stream = 0, bool unique_key = true,
+                              hipStream_t stream = 0, bool unique_key = true,
                               bool ignore_evict_strategy = false) = 0;
 
   /**
@@ -442,7 +443,7 @@ class HashTableBase {
                               value_type** values,                      // (n)
                               bool* founds,                             // (n)
                               score_type* scores = nullptr,             // (n)
-                              cudaStream_t stream = 0, bool unique_key = true,
+                              hipStream_t stream = 0, bool unique_key = true,
                               bool ignore_evict_strategy = false,
                               key_type** locked_key_ptrs = nullptr) = 0;
 
@@ -465,7 +466,7 @@ class HashTableBase {
                          key_type const* keys,        // (n)
                          key_type** locked_key_ptrs,  // (n)
                          bool* succeededs = nullptr,  // (n)
-                         cudaStream_t stream = 0,
+                         hipStream_t stream = 0,
                          score_type const* scores = nullptr) = 0;
 
   /**
@@ -487,7 +488,7 @@ class HashTableBase {
                            key_type** locked_key_ptrs,  // (n)
                            const key_type* keys,        // (n)
                            bool* succeededs = nullptr,  // (n)
-                           cudaStream_t stream = 0) = 0;
+                           hipStream_t stream = 0) = 0;
 
   /**
    * @brief Assign new key-value-score tuples into the hash table.
@@ -517,7 +518,7 @@ class HashTableBase {
                       const key_type* keys,                // (n)
                       const value_type* values,            // (n, DIM)
                       const score_type* scores = nullptr,  // (n)
-                      cudaStream_t stream = 0, bool unique_key = true) = 0;
+                      hipStream_t stream = 0, bool unique_key = true) = 0;
 
   /**
    * @brief Assign new scores for keys.
@@ -542,7 +543,7 @@ class HashTableBase {
   virtual void assign_scores(const size_type n,
                              const key_type* keys,                // (n)
                              const score_type* scores = nullptr,  // (n)
-                             cudaStream_t stream = 0,
+                             hipStream_t stream = 0,
                              bool unique_key = true) = 0;
 
   /**
@@ -551,7 +552,7 @@ class HashTableBase {
   virtual void assign(const size_type n,
                       const key_type* keys,                // (n)
                       const score_type* scores = nullptr,  // (n)
-                      cudaStream_t stream = 0, bool unique_key = true) = 0;
+                      hipStream_t stream = 0, bool unique_key = true) = 0;
 
   /**
    * @brief Assign new values for each keys .
@@ -570,7 +571,7 @@ class HashTableBase {
   virtual void assign_values(const size_type n,
                              const key_type* keys,      // (n)
                              const value_type* values,  // (n, DIM)
-                             cudaStream_t stream = 0,
+                             hipStream_t stream = 0,
                              bool unique_key = true) = 0;
   /**
    * @brief Searches the hash table for the specified keys.
@@ -594,7 +595,7 @@ class HashTableBase {
                     value_type* values,                       // (n, DIM)
                     bool* founds,                             // (n)
                     score_type* scores = nullptr,             // (n)
-                    cudaStream_t stream = 0) const = 0;
+                    hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Searches the hash table for the specified keys.
@@ -623,7 +624,7 @@ class HashTableBase {
                     int* missed_indices,                      // (n)
                     int* missed_size,                         // scalar
                     score_type* scores = nullptr,             // (n)
-                    cudaStream_t stream = 0) const = 0;
+                    hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Searches the hash table for the specified keys and returns address
@@ -651,7 +652,7 @@ class HashTableBase {
                     value_type** values,                      // (n)
                     bool* founds,                             // (n)
                     score_type* scores = nullptr,             // (n)
-                    cudaStream_t stream = 0, bool unique_key = true) const = 0;
+                    hipStream_t stream = 0, bool unique_key = true) const = 0;
 
   /**
    * @brief Searches the hash table for the specified keys and returns address
@@ -679,7 +680,7 @@ class HashTableBase {
                                value_type** values,                      // (n)
                                bool* founds,                             // (n)
                                score_type* scores = nullptr,             // (n)
-                               cudaStream_t stream = 0,
+                               hipStream_t stream = 0,
                                bool unique_key = true) = 0;
 
   /**
@@ -695,7 +696,7 @@ class HashTableBase {
    */
   virtual void contains(const size_type n, const key_type* keys,  // (n)
                         bool* founds,                             // (n)
-                        cudaStream_t stream = 0) const = 0;
+                        hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Removes specified elements from the hash table.
@@ -706,13 +707,13 @@ class HashTableBase {
    *
    */
   virtual void erase(const size_type n, const key_type* keys,
-                     cudaStream_t stream = 0) = 0;
+                     hipStream_t stream = 0) = 0;
 
   /**
    * @brief Removes all of the elements in the hash table with no release
    * object.
    */
-  virtual void clear(cudaStream_t stream = 0) = 0;
+  virtual void clear(hipStream_t stream = 0) = 0;
 
   /**
    * @brief Exports a certain number of the key-value-score tuples from the
@@ -742,13 +743,13 @@ class HashTableBase {
                             key_type* keys,                // (n)
                             value_type* values,            // (n, DIM)
                             score_type* scores = nullptr,  // (n)
-                            cudaStream_t stream = 0) const = 0;
+                            hipStream_t stream = 0) const = 0;
 
   virtual size_type export_batch(const size_type n, const size_type offset,
                                  key_type* keys,                // (n)
                                  value_type* values,            // (n, DIM)
                                  score_type* scores = nullptr,  // (n)
-                                 cudaStream_t stream = 0) const = 0;
+                                 hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Indicates if the hash table has no elements.
@@ -756,7 +757,7 @@ class HashTableBase {
    * @param stream The CUDA stream that is used to execute the operation.
    * @return `true` if the table is empty and `false` otherwise.
    */
-  virtual bool empty(cudaStream_t stream = 0) const = 0;
+  virtual bool empty(hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Returns the hash table size.
@@ -764,7 +765,7 @@ class HashTableBase {
    * @param stream The CUDA stream that is used to execute the operation.
    * @return The table size.
    */
-  virtual size_type size(cudaStream_t stream = 0) const = 0;
+  virtual size_type size(hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Returns the hash table capacity.
@@ -792,7 +793,7 @@ class HashTableBase {
    * @param stream The CUDA stream that is used to execute the operation.
    */
   virtual void reserve(const size_type new_capacity,
-                       cudaStream_t stream = 0) = 0;
+                       hipStream_t stream = 0) = 0;
 
   /**
    * @brief Returns the average number of elements per slot, that is, size()
@@ -802,7 +803,7 @@ class HashTableBase {
    *
    * @return The load factor
    */
-  virtual float load_factor(cudaStream_t stream = 0) const = 0;
+  virtual float load_factor(hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Set max_capacity of the table.
@@ -846,7 +847,7 @@ class HashTableBase {
    */
   virtual size_type save(BaseKVFile<K, V, S>* file,
                          const size_t max_workspace_size = 1L * 1024 * 1024,
-                         cudaStream_t stream = 0) const = 0;
+                         hipStream_t stream = 0) const = 0;
 
   /**
    * @brief Load keys, vectors, scores from file to table.
@@ -861,7 +862,7 @@ class HashTableBase {
    */
   virtual size_type load(BaseKVFile<K, V, S>* file,
                          const size_t max_workspace_size = 1L * 1024 * 1024,
-                         cudaStream_t stream = 0) = 0;
+                         hipStream_t stream = 0) = 0;
 
   virtual void set_global_epoch(const uint64_t epoch) = 0;
 };
@@ -903,7 +904,7 @@ class HashTable : public HashTableBase<K, V, S> {
 
  private:
   using TableCore = nv::merlin::Table<key_type, value_type, score_type>;
-  static constexpr unsigned int TILE_SIZE = 4;
+  static constexpr unsigned int TILE_SIZE = 64;
 
   using DeviceMemoryPool = MemoryPool<DeviceAllocator<char>>;
   using HostMemoryPool = MemoryPool<HostAllocator<char>>;
@@ -927,7 +928,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   ~HashTable() {
     if (initialized_) {
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
 
       initialized_ = false;
       destroy_table<key_type, value_type, score_type>(&table_, allocator_);
@@ -935,7 +936,7 @@ class HashTable : public HashTableBase<K, V, S> {
       dev_mem_pool_.reset();
       host_mem_pool_.reset();
 
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
       if (default_allocator_ && allocator_ != nullptr) {
         delete allocator_;
       }
@@ -971,9 +972,9 @@ class HashTable : public HashTableBase<K, V, S> {
     thrust_allocator_.set_allocator(allocator_);
 
     if (options_.device_id >= 0) {
-      CUDA_CHECK(cudaSetDevice(options_.device_id));
+      CUDA_CHECK(hipSetDevice(options_.device_id));
     } else {
-      CUDA_CHECK(cudaGetDevice(&(options_.device_id)));
+      CUDA_CHECK(hipGetDevice(&(options_.device_id)));
     }
 
     MERLIN_CHECK(ispow2(static_cast<uint32_t>(options_.max_bucket_size)),
@@ -995,8 +996,8 @@ class HashTable : public HashTableBase<K, V, S> {
         "of cache line size");
 
     // Construct table.
-    cudaDeviceProp deviceProp;
-    CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, options_.device_id));
+    hipDeviceProp_t_v2 deviceProp;
+    CUDA_CHECK(hipGetDeviceProperties_v2(&deviceProp, options_.device_id));
     shared_mem_size_ = deviceProp.sharedMemPerBlock;
     sm_cnt_ = deviceProp.multiProcessorCount;
     max_threads_per_block_ = deviceProp.maxThreadsPerBlock;
@@ -1020,7 +1021,7 @@ class HashTable : public HashTableBase<K, V, S> {
     host_mem_pool_ = std::make_unique<MemoryPool<HostAllocator<char>>>(
         options_.host_memory_pool, allocator_);
 
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(hipDeviceSynchronize());
 
     initialized_ = true;
     CudaCheckError();
@@ -1063,7 +1064,7 @@ class HashTable : public HashTableBase<K, V, S> {
                         const key_type* keys,                // (n)
                         const value_type* values,            // (n, DIM)
                         const score_type* scores = nullptr,  // (n)
-                        cudaStream_t stream = 0, bool unique_key = true,
+                        hipStream_t stream = 0, bool unique_key = true,
                         bool ignore_evict_strategy = false) {
     if (ignore_evict_strategy) {
       insert_or_assign_impl<EvictStrategy::kCustomized>(
@@ -1079,7 +1080,7 @@ class HashTable : public HashTableBase<K, V, S> {
                              const key_type* keys,      // (n)
                              const value_type* values,  // (n, DIM)
                              const score_type* scores,  // (n)
-                             cudaStream_t stream, bool unique_key,
+                             hipStream_t stream, bool unique_key,
                              bool ignore_evict_strategy) {
     if (n == 0) {
       return;
@@ -1145,7 +1146,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<5>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(d_dst, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(d_dst, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -1157,9 +1158,9 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128;
 
-        upsert_kernel_lock_key_hybrid<key_type, value_type, score_type,
-                                      BLOCK_SIZE, evict_strategy_>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( upsert_kernel_lock_key_hybrid<key_type, value_type, score_type,
+                                      BLOCK_SIZE, evict_strategy_>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_size, table_->buckets_num,
                 options_.max_bucket_size, options_.dim, keys, d_dst, scores,
                 keys_ptr, d_src_offset, n, global_epoch_);
@@ -1169,8 +1170,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        upsert_kernel<key_type, value_type, score_type, evict_strategy_,
-                      TILE_SIZE><<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( upsert_kernel<key_type, value_type, score_type, evict_strategy_,
+                      TILE_SIZE>), dim3(grid_size), dim3(block_size), 0, stream, 
             d_table_, table_->buckets, options_.max_bucket_size,
             table_->buckets_num, options_.dim, keys, d_dst, scores,
             d_src_offset, global_epoch_, N);
@@ -1185,8 +1186,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_kernel_unlock_key<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(values, d_dst_sorted,
+       hipLaunchKernelGGL(( write_kernel_unlock_key<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, values, d_dst_sorted,
                                                    d_src_offset_sorted, dim(),
                                                    keys, keys_ptr, N);
 
@@ -1199,12 +1200,12 @@ class HashTable : public HashTableBase<K, V, S> {
         auto h_src_offset_sorted = get_vector<1>(mv1, host_temp_storage);
         auto h_values = get_vector<2>(mv1, host_temp_storage);
 
-        CUDA_CHECK(cudaMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_values, values,
+        CUDA_CHECK(hipMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_values, values,
                                    n * dim() * sizeof(value_type),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
 
         write_by_cpu<value_type>(h_dst_sorted, h_values, h_src_offset_sorted,
                                  dim(), n);
@@ -1213,8 +1214,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( write_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 values, d_dst_sorted, d_src_offset_sorted, dim(), N);
       }
     }
@@ -1273,7 +1274,7 @@ class HashTable : public HashTableBase<K, V, S> {
                         value_type* evicted_values,    // (n, DIM)
                         score_type* evicted_scores,    // (n)
                         size_type* d_evicted_counter,  // (1)
-                        cudaStream_t stream = 0, bool unique_key = true,
+                        hipStream_t stream = 0, bool unique_key = true,
                         bool ignore_evict_strategy = false) {
     if (n == 0) {
       return;
@@ -1331,7 +1332,7 @@ class HashTable : public HashTableBase<K, V, S> {
       KernelLauncher::launch_kernel(kernelParams, stream);
     } else {
       // always use max tile to avoid data-deps as possible.
-      const int TILE_SIZE = 32;
+      const int TILE_SIZE = 64;
       size_t n_offsets = (n + TILE_SIZE - 1) / TILE_SIZE;
       const size_type dev_ws_size =
           n * (sizeof(key_type) + sizeof(score_type)) +
@@ -1347,8 +1348,8 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_masks = reinterpret_cast<bool*>(tmp_evict_values + n * dim());
 
       CUDA_CHECK(
-          cudaMemsetAsync(d_offsets, 0, n_offsets * sizeof(int64_t), stream));
-      CUDA_CHECK(cudaMemsetAsync(d_masks, 0, n * sizeof(bool), stream));
+          hipMemsetAsync(d_offsets, 0, n_offsets * sizeof(int64_t), stream));
+      CUDA_CHECK(hipMemsetAsync(d_masks, 0, n * sizeof(bool), stream));
 
       size_type block_size = options_.block_size;
       size_type grid_size = SAFE_GET_GRID_SIZE(n, block_size);
@@ -1361,23 +1362,23 @@ class HashTable : public HashTableBase<K, V, S> {
           table_->buckets_num, options_.dim, stream, n, d_table_,
           table_->buckets, keys, values, scores, tmp_evict_keys,
           tmp_evict_values, tmp_evict_scores, global_epoch_);
-      keys_not_empty<K>
-          <<<grid_size, block_size, 0, stream>>>(tmp_evict_keys, d_masks, n);
+     hipLaunchKernelGGL(( keys_not_empty<K>)
+          , dim3(grid_size), dim3(block_size), 0, stream, tmp_evict_keys, d_masks, n);
 
-      gpu_cell_count<int64_t, TILE_SIZE><<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( gpu_cell_count<int64_t, TILE_SIZE>), dim3(grid_size), dim3(block_size), 0, stream, 
           d_masks, d_offsets, n, d_evicted_counter);
 
       void* d_temp_storage = nullptr;
       size_t temp_storage_bytes = 0;
-      cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes,
+      hipcub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes,
                                     d_offsets, d_offsets, n_offsets, stream);
       auto dev_ws1{dev_mem_pool_->get_workspace<1>(temp_storage_bytes, stream)};
       d_temp_storage = dev_ws1.get<void*>(0);
-      cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes,
+      hipcub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes,
                                     d_offsets, d_offsets, n_offsets, stream);
 
-      compact_key_value_score_kernel<K, V, S, int64_t, TILE_SIZE>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( compact_key_value_score_kernel<K, V, S, int64_t, TILE_SIZE>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               d_masks, n, d_offsets, tmp_evict_keys, tmp_evict_values,
               tmp_evict_scores, evicted_keys, evicted_values, evicted_scores,
               dim());
@@ -1434,7 +1435,7 @@ class HashTable : public HashTableBase<K, V, S> {
                              key_type* evicted_keys,      // (n)
                              value_type* evicted_values,  // (n, DIM)
                              score_type* evicted_scores,  // (n)
-                             cudaStream_t stream = 0, bool unique_key = true,
+                             hipStream_t stream = 0, bool unique_key = true,
                              bool ignore_evict_strategy = false) {
     if (n == 0) {
       return 0;
@@ -1443,16 +1444,16 @@ class HashTable : public HashTableBase<K, V, S> {
     size_type* d_evicted_counter{dev_ws.get<size_type*>(0)};
 
     CUDA_CHECK(
-        cudaMemsetAsync(d_evicted_counter, 0, sizeof(size_type), stream));
+        hipMemsetAsync(d_evicted_counter, 0, sizeof(size_type), stream));
     insert_and_evict(n, keys, values, scores, evicted_keys, evicted_values,
                      evicted_scores, d_evicted_counter, stream, unique_key,
                      ignore_evict_strategy);
 
     size_type h_evicted_counter = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&h_evicted_counter, d_evicted_counter,
-                               sizeof(size_type), cudaMemcpyDeviceToHost,
+    CUDA_CHECK(hipMemcpyAsync(&h_evicted_counter, d_evicted_counter,
+                               sizeof(size_type), hipMemcpyDeviceToHost,
                                stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     CudaCheckError();
     return h_evicted_counter;
   }
@@ -1502,7 +1503,7 @@ class HashTable : public HashTableBase<K, V, S> {
                        const value_type* value_or_deltas,   // (n, DIM)
                        const bool* accum_or_assigns,        // (n)
                        const score_type* scores = nullptr,  // (n)
-                       cudaStream_t stream = 0,
+                       hipStream_t stream = 0,
                        bool ignore_evict_strategy = false) {
     if (n == 0) {
       return;
@@ -1554,15 +1555,15 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<5>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(dst, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(dst, 0, dev_ws_size, stream));
 
       {
         const size_t block_size = options_.block_size;
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        accum_or_assign_kernel<key_type, value_type, score_type, evict_strategy,
-                               TILE_SIZE><<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( accum_or_assign_kernel<key_type, value_type, score_type, evict_strategy,
+                               TILE_SIZE>), dim3(grid_size), dim3(block_size), 0, stream, 
             d_table_, options_.max_bucket_size, table_->buckets_num, dim(),
             keys, dst, scores, accum_or_assigns, src_offset, founds,
             global_epoch_, N);
@@ -1577,8 +1578,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_with_accum_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(value_or_deltas, dst_sorted,
+       hipLaunchKernelGGL(( write_with_accum_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, value_or_deltas, dst_sorted,
                                                    accum_or_assigns, founds,
                                                    src_offset_sorted, dim(), N);
       }
@@ -1606,7 +1607,7 @@ class HashTable : public HashTableBase<K, V, S> {
   void find_or_insert(const size_type n, const key_type* keys,  // (n)
                       value_type* values,                       // (n * DIM)
                       score_type* scores = nullptr,             // (n)
-                      cudaStream_t stream = 0, bool unique_key = true,
+                      hipStream_t stream = 0, bool unique_key = true,
                       bool ignore_evict_strategy = false) {
     if (n == 0) {
       return;
@@ -1674,7 +1675,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<6>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(d_table_value_addrs, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(d_table_value_addrs, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -1686,9 +1687,9 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128;
 
-        find_or_insert_kernel_lock_key_hybrid<key_type, value_type, score_type,
-                                              BLOCK_SIZE, evict_strategy>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( find_or_insert_kernel_lock_key_hybrid<key_type, value_type, score_type,
+                                              BLOCK_SIZE, evict_strategy>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_size, table_->buckets_num,
                 options_.max_bucket_size, options_.dim, keys,
                 d_table_value_addrs, scores, keys_ptr, param_key_index, founds,
@@ -1699,8 +1700,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        find_or_insert_kernel<key_type, value_type, score_type, evict_strategy,
-                              TILE_SIZE><<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( find_or_insert_kernel<key_type, value_type, score_type, evict_strategy,
+                              TILE_SIZE>), dim3(grid_size), dim3(block_size), 0, stream, 
             d_table_, table_->buckets, options_.max_bucket_size,
             table_->buckets_num, options_.dim, keys, d_table_value_addrs,
             scores, founds, param_key_index, global_epoch_, N);
@@ -1715,8 +1716,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        read_or_write_kernel_unlock_key<key_type, value_type, score_type, V>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( read_or_write_kernel_unlock_key<key_type, value_type, score_type, V>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 d_table_value_addrs_sorted, values, founds,
                 param_key_index_sorted, keys_ptr, keys, dim(), N);
 
@@ -1730,27 +1731,27 @@ class HashTable : public HashTableBase<K, V, S> {
         auto h_founds = get_vector<2>(mv1, host_temp_storage);
         auto h_param_values = get_vector<3>(mv1, host_temp_storage);
 
-        CUDA_CHECK(cudaMemcpyAsync(h_table_value_addrs_sorted,
+        CUDA_CHECK(hipMemcpyAsync(h_table_value_addrs_sorted,
                                    d_table_value_addrs_sorted, mv1.offset(3),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_param_values, values,
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_param_values, values,
                                    n * sizeof(value_type) * dim(),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
 
         read_or_write_by_cpu<value_type>(
             h_table_value_addrs_sorted, h_param_values,
             h_param_key_index_sorted, h_founds, dim(), n);
-        CUDA_CHECK(cudaMemcpyAsync(values, h_param_values,
+        CUDA_CHECK(hipMemcpyAsync(values, h_param_values,
                                    n * sizeof(value_type) * dim(),
-                                   cudaMemcpyHostToDevice, stream));
+                                   hipMemcpyHostToDevice, stream));
       } else {
         const size_t block_size = options_.io_block_size;
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        read_or_write_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( read_or_write_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 d_table_value_addrs_sorted, values, founds,
                 param_key_index_sorted, dim(), N);
       }
@@ -1787,7 +1788,7 @@ class HashTable : public HashTableBase<K, V, S> {
                       value_type** values,                      // (n)
                       bool* founds,                             // (n)
                       score_type* scores = nullptr,             // (n)
-                      cudaStream_t stream = 0, bool unique_key = true,
+                      hipStream_t stream = 0, bool unique_key = true,
                       bool ignore_evict_strategy = false,
                       key_type** locked_key_ptrs = nullptr) {
     if (n == 0) {
@@ -1817,9 +1818,9 @@ class HashTable : public HashTableBase<K, V, S> {
       }
 
       constexpr uint32_t BLOCK_SIZE = 128U;
-      find_or_insert_ptr_kernel_lock_key<key_type, value_type, score_type,
-                                         BLOCK_SIZE, evict_strategy>
-          <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( find_or_insert_ptr_kernel_lock_key<key_type, value_type, score_type,
+                                         BLOCK_SIZE, evict_strategy>)
+          , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               table_->buckets, table_->buckets_size, table_->buckets_num,
               options_.max_bucket_size, options_.dim, keys, values, scores,
               locked_key_ptrs, n, founds, global_epoch_);
@@ -1833,17 +1834,17 @@ class HashTable : public HashTableBase<K, V, S> {
       const size_type dev_ws_size{n * sizeof(key_type**)};
       auto dev_ws{dev_mem_pool_->get_workspace<1>(dev_ws_size, stream)};
       auto keys_ptr{dev_ws.get<key_type**>(0)};
-      CUDA_CHECK(cudaMemsetAsync(keys_ptr, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(keys_ptr, 0, dev_ws_size, stream));
 
-      find_or_insert_ptr_kernel_lock_key<key_type, value_type, score_type,
-                                         BLOCK_SIZE, evict_strategy>
-          <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( find_or_insert_ptr_kernel_lock_key<key_type, value_type, score_type,
+                                         BLOCK_SIZE, evict_strategy>)
+          , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               table_->buckets, table_->buckets_size, table_->buckets_num,
               options_.max_bucket_size, options_.dim, keys, values, scores,
               keys_ptr, n, founds, global_epoch_);
 
-      find_or_insert_ptr_kernel_unlock_key<key_type>
-          <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( find_or_insert_ptr_kernel_unlock_key<key_type>)
+          , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               keys, keys_ptr, n);
     } else {
       using Selector = SelectFindOrInsertPtrKernel<key_type, value_type,
@@ -1882,7 +1883,7 @@ class HashTable : public HashTableBase<K, V, S> {
                  key_type const* keys,        // (n)
                  key_type** locked_key_ptrs,  // (n)
                  bool* success = nullptr,     // (n)
-                 cudaStream_t stream = 0, score_type const* scores = nullptr) {
+                 hipStream_t stream = 0, score_type const* scores = nullptr) {
     if (n == 0) {
       return;
     }
@@ -1899,8 +1900,8 @@ class HashTable : public HashTableBase<K, V, S> {
           "small.");
     }
     constexpr uint32_t BLOCK_SIZE = 128U;
-    lock_kernel_with_filter<key_type, value_type, score_type, evict_strategy>
-        <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+   hipLaunchKernelGGL(( lock_kernel_with_filter<key_type, value_type, score_type, evict_strategy>)
+        , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             table_->buckets, table_->buckets_num, options_.max_bucket_size,
             options_.dim, keys, locked_key_ptrs, success, scores, global_epoch_,
             n);
@@ -1925,7 +1926,7 @@ class HashTable : public HashTableBase<K, V, S> {
   void unlock_keys(const size_type n, key_type** locked_key_ptrs,  // (n)
                    const key_type* keys,                           // (n)
                    bool* success = nullptr,                        // (n)
-                   cudaStream_t stream = 0) {
+                   hipStream_t stream = 0) {
     if (n == 0) {
       return;
     }
@@ -1937,8 +1938,8 @@ class HashTable : public HashTableBase<K, V, S> {
 
     constexpr uint32_t BLOCK_SIZE = 128U;
     /// TODO: check the key belongs to the bucket.
-    unlock_keys_kernel<key_type>
-        <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+   hipLaunchKernelGGL(( unlock_keys_kernel<key_type>)
+        , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             n, locked_key_ptrs, keys, success);
   }
 
@@ -1970,7 +1971,7 @@ class HashTable : public HashTableBase<K, V, S> {
               const key_type* keys,                // (n)
               const value_type* values,            // (n, DIM)
               const score_type* scores = nullptr,  // (n)
-              cudaStream_t stream = 0, bool unique_key = true) {
+              hipStream_t stream = 0, bool unique_key = true) {
     if (n == 0) {
       return;
     }
@@ -2025,7 +2026,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<5>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(d_dst, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(d_dst, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -2037,9 +2038,9 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128U;
 
-        tlp_update_kernel_hybrid<key_type, value_type, score_type,
-                                 evict_strategy>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( tlp_update_kernel_hybrid<key_type, value_type, score_type,
+                                 evict_strategy>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_num, options_.max_bucket_size,
                 options_.dim, keys, d_dst, scores, keys_ptr, d_src_offset,
                 global_epoch_, n);
@@ -2049,8 +2050,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        update_kernel<key_type, value_type, score_type, evict_strategy,
-                      TILE_SIZE><<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( update_kernel<key_type, value_type, score_type, evict_strategy,
+                      TILE_SIZE>), dim3(grid_size), dim3(block_size), 0, stream, 
             d_table_, table_->buckets, options_.max_bucket_size,
             table_->buckets_num, options_.dim, keys, d_dst, scores,
             d_src_offset, global_epoch_, N);
@@ -2065,8 +2066,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_kernel_unlock_key<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(values, d_dst_sorted,
+       hipLaunchKernelGGL(( write_kernel_unlock_key<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, values, d_dst_sorted,
                                                    d_src_offset_sorted, dim(),
                                                    keys, keys_ptr, N);
 
@@ -2079,12 +2080,12 @@ class HashTable : public HashTableBase<K, V, S> {
         auto h_src_offset_sorted = get_vector<1>(mv1, host_temp_storage);
         auto h_values = get_vector<2>(mv1, host_temp_storage);
 
-        CUDA_CHECK(cudaMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_values, values,
+        CUDA_CHECK(hipMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_values, values,
                                    n * dim() * sizeof(value_type),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
 
         write_by_cpu<value_type>(h_dst_sorted, h_values, h_src_offset_sorted,
                                  dim(), n);
@@ -2093,8 +2094,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( write_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 values, d_dst_sorted, d_src_offset_sorted, dim(), N);
       }
     }
@@ -2125,7 +2126,7 @@ class HashTable : public HashTableBase<K, V, S> {
   void assign_scores(const size_type n,
                      const key_type* keys,                // (n)
                      const score_type* scores = nullptr,  // (n)
-                     cudaStream_t stream = 0, bool unique_key = true) {
+                     hipStream_t stream = 0, bool unique_key = true) {
     if (n == 0) {
       return;
     }
@@ -2171,7 +2172,7 @@ class HashTable : public HashTableBase<K, V, S> {
   void assign(const size_type n,
               const key_type* keys,                // (n)
               const score_type* scores = nullptr,  // (n)
-              cudaStream_t stream = 0, bool unique_key = true) {
+              hipStream_t stream = 0, bool unique_key = true) {
     assign_scores(n, keys, scores, stream, unique_key);
   }
 
@@ -2192,7 +2193,7 @@ class HashTable : public HashTableBase<K, V, S> {
   void assign_values(const size_type n,
                      const key_type* keys,      // (n)
                      const value_type* values,  // (n, DIM)
-                     cudaStream_t stream = 0, bool unique_key = true) {
+                     hipStream_t stream = 0, bool unique_key = true) {
     if (n == 0) {
       return;
     }
@@ -2244,7 +2245,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<5>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(d_dst, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(d_dst, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -2256,8 +2257,8 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128U;
 
-        tlp_update_values_kernel_hybrid<key_type, value_type, score_type>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( tlp_update_values_kernel_hybrid<key_type, value_type, score_type>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_num, options_.max_bucket_size,
                 options_.dim, keys, d_dst, keys_ptr, d_src_offset, n);
 
@@ -2266,8 +2267,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        update_values_kernel<key_type, value_type, score_type, TILE_SIZE>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( update_values_kernel<key_type, value_type, score_type, TILE_SIZE>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 d_table_, table_->buckets, options_.max_bucket_size,
                 table_->buckets_num, options_.dim, keys, d_dst, d_src_offset,
                 N);
@@ -2286,8 +2287,8 @@ class HashTable : public HashTableBase<K, V, S> {
           const size_t N = n * vec_dim;
           const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-          write_kernel_unlock_key<key_type, VecV, score_type>
-              <<<grid_size, block_size, 0, stream>>>(
+         hipLaunchKernelGGL(( write_kernel_unlock_key<key_type, VecV, score_type>)
+              , dim3(grid_size), dim3(block_size), 0, stream, 
                   reinterpret_cast<const VecV*>(values),
                   reinterpret_cast<VecV**>(d_dst_sorted), d_src_offset_sorted,
                   vec_dim, keys, keys_ptr, N);
@@ -2295,8 +2296,8 @@ class HashTable : public HashTableBase<K, V, S> {
           const size_t N = n * dim();
           const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-          write_kernel_unlock_key<key_type, value_type, score_type>
-              <<<grid_size, block_size, 0, stream>>>(values, d_dst_sorted,
+         hipLaunchKernelGGL(( write_kernel_unlock_key<key_type, value_type, score_type>)
+              , dim3(grid_size), dim3(block_size), 0, stream, values, d_dst_sorted,
                                                      d_src_offset_sorted, dim(),
                                                      keys, keys_ptr, N);
         }
@@ -2309,12 +2310,12 @@ class HashTable : public HashTableBase<K, V, S> {
         auto h_src_offset_sorted = get_vector<1>(mv1, host_temp_storage);
         auto h_values = get_vector<2>(mv1, host_temp_storage);
 
-        CUDA_CHECK(cudaMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_values, values,
+        CUDA_CHECK(hipMemcpyAsync(h_dst_sorted, d_dst_sorted, mv1.offset(2),
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_values, values,
                                    n * dim() * sizeof(value_type),
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipStreamSynchronize(stream));
 
         write_by_cpu<value_type>(h_dst_sorted, h_values, h_src_offset_sorted,
                                  dim(), n);
@@ -2323,8 +2324,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        write_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( write_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 values, d_dst_sorted, d_src_offset_sorted, dim(), N);
       }
     }
@@ -2354,12 +2355,12 @@ class HashTable : public HashTableBase<K, V, S> {
             value_type* values,                       // (n, DIM)
             bool* founds,                             // (n)
             score_type* scores = nullptr,             // (n)
-            cudaStream_t stream = 0) const {
+            hipStream_t stream = 0) const {
     if (n == 0) {
       return;
     }
 
-    CUDA_CHECK(cudaMemsetAsync(founds, 0, n * sizeof(bool), stream));
+    CUDA_CHECK(hipMemsetAsync(founds, 0, n * sizeof(bool), stream));
 
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
@@ -2408,7 +2409,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<4>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(src, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(src, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -2419,8 +2420,8 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128U;
 
-        tlp_lookup_kernel_hybrid<key_type, value_type, score_type>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( tlp_lookup_kernel_hybrid<key_type, value_type, score_type>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_num, options_.max_bucket_size,
                 options_.dim, keys, src, scores, dst_offset, founds, n);
       } else {
@@ -2428,8 +2429,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        lookup_kernel<key_type, value_type, score_type, TILE_SIZE>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( lookup_kernel<key_type, value_type, score_type, TILE_SIZE>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 d_table_, table_->buckets, options_.max_bucket_size,
                 table_->buckets_num, options_.dim, keys, src, scores, founds,
                 dst_offset, N);
@@ -2444,8 +2445,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        read_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(src_sorted, values, founds,
+       hipLaunchKernelGGL(( read_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, src_sorted, values, founds,
                                                    dst_offset_sorted, dim(), N);
       }
     }
@@ -2480,12 +2481,12 @@ class HashTable : public HashTableBase<K, V, S> {
             int* missed_indices,                      // (n)
             int* missed_size,                         // scalar
             score_type* scores = nullptr,             // (n)
-            cudaStream_t stream = 0) const {
+            hipStream_t stream = 0) const {
     if (n == 0) {
       return;
     }
 
-    CUDA_CHECK(cudaMemsetAsync(missed_size, 0, sizeof(*missed_size), stream));
+    CUDA_CHECK(hipMemsetAsync(missed_size, 0, sizeof(*missed_size), stream));
 
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
@@ -2535,7 +2536,7 @@ class HashTable : public HashTableBase<K, V, S> {
       auto d_sort_storage = get_vector<4>(mv, temp_storage);
       sortOp.set_storage(reinterpret_cast<void*>(d_sort_storage));
 
-      CUDA_CHECK(cudaMemsetAsync(src, 0, dev_ws_size, stream));
+      CUDA_CHECK(hipMemsetAsync(src, 0, dev_ws_size, stream));
 
       constexpr uint32_t MinBucketCapacityFilter =
           sizeof(VecD_Load) / sizeof(D);
@@ -2546,8 +2547,8 @@ class HashTable : public HashTableBase<K, V, S> {
       if (filter_condition) {
         constexpr uint32_t BLOCK_SIZE = 128U;
 
-        tlp_lookup_kernel_hybrid<key_type, value_type, score_type>
-            <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+       hipLaunchKernelGGL(( tlp_lookup_kernel_hybrid<key_type, value_type, score_type>)
+            , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
                 table_->buckets, table_->buckets_num, options_.max_bucket_size,
                 options_.dim, keys, src, scores, dst_offset, missed_keys,
                 missed_indices, missed_size, n);
@@ -2556,8 +2557,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * TILE_SIZE;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        lookup_kernel<key_type, value_type, score_type, TILE_SIZE>
-            <<<grid_size, block_size, 0, stream>>>(
+       hipLaunchKernelGGL(( lookup_kernel<key_type, value_type, score_type, TILE_SIZE>)
+            , dim3(grid_size), dim3(block_size), 0, stream, 
                 d_table_, table_->buckets, options_.max_bucket_size,
                 table_->buckets_num, options_.dim, keys, src, scores,
                 missed_keys, missed_indices, missed_size, dst_offset, N);
@@ -2572,8 +2573,8 @@ class HashTable : public HashTableBase<K, V, S> {
         const size_t N = n * dim();
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        read_kernel<key_type, value_type, score_type>
-            <<<grid_size, block_size, 0, stream>>>(src_sorted, values,
+       hipLaunchKernelGGL(( read_kernel<key_type, value_type, score_type>)
+            , dim3(grid_size), dim3(block_size), 0, stream, src_sorted, values,
                                                    dst_offset_sorted, dim(), N);
       }
     }
@@ -2607,7 +2608,7 @@ class HashTable : public HashTableBase<K, V, S> {
             value_type** values,                      // (n)
             bool* founds,                             // (n)
             score_type* scores = nullptr,             // (n)
-            cudaStream_t stream = 0, bool unique_key = true) const {
+            hipStream_t stream = 0, bool unique_key = true) const {
     if (n == 0) {
       return;
     }
@@ -2620,9 +2621,9 @@ class HashTable : public HashTableBase<K, V, S> {
     constexpr uint32_t MinBucketCapacityFilter = sizeof(VecD_Load) / sizeof(D);
     if (unique_key && options_.max_bucket_size >= MinBucketCapacityFilter) {
       constexpr uint32_t BLOCK_SIZE = 128U;
-      tlp_lookup_ptr_kernel_with_filter<key_type, value_type, score_type,
-                                        evict_strategy>
-          <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( tlp_lookup_ptr_kernel_with_filter<key_type, value_type, score_type,
+                                        evict_strategy>)
+          , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               table_->buckets, table_->buckets_num, options_.max_bucket_size,
               options_.dim, keys, values, scores, founds, n, false,
               global_epoch_);
@@ -2670,7 +2671,7 @@ class HashTable : public HashTableBase<K, V, S> {
                        value_type** values,                      // (n)
                        bool* founds,                             // (n)
                        score_type* scores = nullptr,             // (n)
-                       cudaStream_t stream = 0, bool unique_key = true) {
+                       hipStream_t stream = 0, bool unique_key = true) {
     if (n == 0) {
       return;
     }
@@ -2685,9 +2686,9 @@ class HashTable : public HashTableBase<K, V, S> {
     constexpr uint32_t MinBucketCapacityFilter = sizeof(VecD_Load) / sizeof(D);
     if (unique_key && options_.max_bucket_size >= MinBucketCapacityFilter) {
       constexpr uint32_t BLOCK_SIZE = 128U;
-      tlp_lookup_ptr_kernel_with_filter<key_type, value_type, score_type,
-                                        evict_strategy>
-          <<<(n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( tlp_lookup_ptr_kernel_with_filter<key_type, value_type, score_type,
+                                        evict_strategy>)
+          , dim3((n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               table_->buckets, table_->buckets_num, options_.max_bucket_size,
               options_.dim, keys, values, scores, founds, n, true,
               global_epoch_);
@@ -2713,7 +2714,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   void contains(const size_type n, const key_type* keys,  // (n)
                 bool* founds,                             // (n)
-                cudaStream_t stream = 0) const {
+                hipStream_t stream = 0) const {
     if (n == 0) {
       return;
     }
@@ -2755,7 +2756,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @param stream The CUDA stream that is used to execute the operation.
    *
    */
-  void erase(const size_type n, const key_type* keys, cudaStream_t stream = 0) {
+  void erase(const size_type n, const key_type* keys, hipStream_t stream = 0) {
     if (n == 0) {
       return;
     }
@@ -2770,8 +2771,8 @@ class HashTable : public HashTableBase<K, V, S> {
       const size_t N = n * TILE_SIZE;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-      remove_kernel<key_type, value_type, score_type, TILE_SIZE>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( remove_kernel<key_type, value_type, score_type, TILE_SIZE>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               d_table_, keys, table_->buckets, table_->buckets_size,
               table_->bucket_max_size, table_->buckets_num, N);
     }
@@ -2813,7 +2814,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   template <template <typename, typename> class PredFunctor>
   size_type erase_if(const key_type& pattern, const score_type& threshold,
-                     cudaStream_t stream = 0) {
+                     hipStream_t stream = 0) {
     std::unique_ptr<update_read_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<update_read_lock>(mutex_, stream);
@@ -2822,24 +2823,24 @@ class HashTable : public HashTableBase<K, V, S> {
     auto dev_ws{dev_mem_pool_->get_workspace<1>(sizeof(size_type), stream)};
     auto d_count{dev_ws.get<size_type*>(0)};
 
-    CUDA_CHECK(cudaMemsetAsync(d_count, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_count, 0, sizeof(size_type), stream));
 
     {
       const size_t block_size = options_.block_size;
       const size_t N = table_->buckets_num;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-      remove_kernel<key_type, value_type, score_type, PredFunctor>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( remove_kernel<key_type, value_type, score_type, PredFunctor>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               d_table_, pattern, threshold, d_count, table_->buckets,
               table_->buckets_size, table_->bucket_max_size,
               table_->buckets_num, N);
     }
 
     size_type count = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&count, d_count, sizeof(size_type),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipMemcpyAsync(&count, d_count, sizeof(size_type),
+                               hipMemcpyDeviceToHost, stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
 
     CudaCheckError();
     return count;
@@ -2856,7 +2857,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
 
   template <typename PredFunctor>
-  size_type erase_if_v2(PredFunctor& pred, cudaStream_t stream = 0) {
+  size_type erase_if_v2(PredFunctor& pred, hipStream_t stream = 0) {
     std::unique_ptr<update_read_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<update_read_lock>(mutex_, stream);
@@ -2865,7 +2866,7 @@ class HashTable : public HashTableBase<K, V, S> {
     auto dev_ws{dev_mem_pool_->get_workspace<1>(sizeof(size_type), stream)};
     auto d_count{dev_ws.get<size_type*>(0)};
 
-    CUDA_CHECK(cudaMemsetAsync(d_count, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_count, 0, sizeof(size_type), stream));
 
     {
       /// Search_length should be multiple of GroupSize for communication.
@@ -2889,15 +2890,15 @@ class HashTable : public HashTableBase<K, V, S> {
       uint64_t grid_size =
           std::min(sm_cnt_ * max_threads_per_block_ / block_size,
                    SAFE_GET_GRID_SIZE(n, block_size));
-      kernel<<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( kernel), dim3(grid_size), dim3(block_size), 0, stream, 
           n, 0, pred, table_->buckets, table_->buckets_size,
           table_->bucket_max_size, table_->dim, d_count);
     }
 
     size_type count = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&count, d_count, sizeof(size_type),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipMemcpyAsync(&count, d_count, sizeof(size_type),
+                               hipMemcpyDeviceToHost, stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
 
     CudaCheckError();
     return count;
@@ -2907,7 +2908,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @brief Removes all of the elements in the hash table with no release
    * object.
    */
-  void clear(cudaStream_t stream = 0) {
+  void clear(hipStream_t stream = 0) {
     std::unique_ptr<update_read_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<update_read_lock>(mutex_, stream);
@@ -2917,8 +2918,8 @@ class HashTable : public HashTableBase<K, V, S> {
     const size_t N = table_->buckets_num * table_->bucket_max_size;
     const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-    clear_kernel<key_type, value_type, score_type>
-        <<<grid_size, block_size, 0, stream>>>(d_table_, table_->buckets, N);
+   hipLaunchKernelGGL(( clear_kernel<key_type, value_type, score_type>)
+        , dim3(grid_size), dim3(block_size), 0, stream, d_table_, table_->buckets, N);
 
     CudaCheckError();
   }
@@ -2952,13 +2953,13 @@ class HashTable : public HashTableBase<K, V, S> {
                     key_type* keys,                // (n)
                     value_type* values,            // (n, DIM)
                     score_type* scores = nullptr,  // (n)
-                    cudaStream_t stream = 0) const {
+                    hipStream_t stream = 0) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<read_shared_lock>(mutex_, stream);
     }
 
-    CUDA_CHECK(cudaMemsetAsync(d_counter, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_counter, 0, sizeof(size_type), stream));
     if (offset >= table_->capacity) {
       return;
     }
@@ -2971,8 +2972,8 @@ class HashTable : public HashTableBase<K, V, S> {
 
     const size_t grid_size = SAFE_GET_GRID_SIZE(n, block_size);
 
-    dump_kernel<key_type, value_type, score_type>
-        <<<grid_size, block_size, shared_size, stream>>>(
+   hipLaunchKernelGGL(( dump_kernel<key_type, value_type, score_type>)
+        , dim3(grid_size), dim3(block_size), shared_size, stream, 
             d_table_, table_->buckets, keys, values, scores, offset, n,
             d_counter);
 
@@ -2983,17 +2984,17 @@ class HashTable : public HashTableBase<K, V, S> {
                          key_type* keys,                // (n)
                          value_type* values,            // (n, DIM)
                          score_type* scores = nullptr,  // (n)
-                         cudaStream_t stream = 0) const {
+                         hipStream_t stream = 0) const {
     auto dev_ws{dev_mem_pool_->get_workspace<1>(sizeof(size_type), stream)};
     auto d_counter{dev_ws.get<size_type*>(0)};
 
-    CUDA_CHECK(cudaMemsetAsync(d_counter, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_counter, 0, sizeof(size_type), stream));
     export_batch(n, offset, d_counter, keys, values, scores, stream);
 
     size_type counter = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&counter, d_counter, sizeof(size_type),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipMemcpyAsync(&counter, d_counter, sizeof(size_type),
+                               hipMemcpyDeviceToHost, stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     return counter;
   }
 
@@ -3048,12 +3049,12 @@ class HashTable : public HashTableBase<K, V, S> {
                        key_type* keys,                // (n)
                        value_type* values,            // (n, DIM)
                        score_type* scores = nullptr,  // (n)
-                       cudaStream_t stream = 0) const {
+                       hipStream_t stream = 0) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<read_shared_lock>(mutex_, stream);
     }
-    CUDA_CHECK(cudaMemsetAsync(d_counter, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_counter, 0, sizeof(size_type), stream));
 
     if (offset >= table_->capacity) {
       return;
@@ -3119,7 +3120,7 @@ class HashTable : public HashTableBase<K, V, S> {
       shared_size = kvm_size * block_size;
       grid_size = SAFE_GET_GRID_SIZE(n, block_size);
     }
-    kernel<<<grid_size, block_size, shared_size, stream>>>(
+   hipLaunchKernelGGL(( kernel), dim3(grid_size), dim3(block_size), shared_size, stream, 
         d_table_, table_->buckets, pattern, threshold, keys, values, scores,
         offset, n, d_counter);
 
@@ -3160,12 +3161,12 @@ class HashTable : public HashTableBase<K, V, S> {
                           key_type* keys,                // (n)
                           value_type* values,            // (n, DIM)
                           score_type* scores = nullptr,  // (n)
-                          cudaStream_t stream = 0) const {
+                          hipStream_t stream = 0) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<read_shared_lock>(mutex_, stream);
     }
-    CUDA_CHECK(cudaMemsetAsync(d_counter, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_counter, 0, sizeof(size_type), stream));
 
     if (offset >= table_->capacity) {
       return;
@@ -3190,7 +3191,7 @@ class HashTable : public HashTableBase<K, V, S> {
     uint64_t block_size = 128UL;
     uint64_t grid_size = std::min(sm_cnt_ * max_threads_per_block_ / block_size,
                                   SAFE_GET_GRID_SIZE(n, block_size));
-    kernel<<<grid_size, block_size, 0, stream>>>(
+   hipLaunchKernelGGL(( kernel), dim3(grid_size), dim3(block_size), 0, stream, 
         n, offset, pred, table_->buckets, table_->bucket_max_size, dim, keys,
         values, scores, d_counter);
 
@@ -3221,7 +3222,7 @@ class HashTable : public HashTableBase<K, V, S> {
 
   template <typename ExecutionFunc>
   void for_each(const size_type first, const size_type last, ExecutionFunc& f,
-                cudaStream_t stream = 0) {
+                hipStream_t stream = 0) {
     std::unique_ptr<update_read_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<update_read_lock>(mutex_, stream);
@@ -3251,7 +3252,7 @@ class HashTable : public HashTableBase<K, V, S> {
     uint64_t block_size = 128UL;
     uint64_t grid_size = std::min(sm_cnt_ * max_threads_per_block_ / block_size,
                                   SAFE_GET_GRID_SIZE(n, block_size));
-    kernel<<<grid_size, block_size, 0, stream>>>(n, first, f, table_->buckets,
+   hipLaunchKernelGGL(( kernel), dim3(grid_size), dim3(block_size), 0, stream, n, first, f, table_->buckets,
                                                  table_->bucket_max_size, dim);
 
     CudaCheckError();
@@ -3264,7 +3265,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @param stream The CUDA stream that is used to execute the operation.
    * @return `true` if the table is empty and `false` otherwise.
    */
-  bool empty(cudaStream_t stream = 0) const { return size(stream) == 0; }
+  bool empty(hipStream_t stream = 0) const { return size(stream) == 0; }
 
   /**
    * @brief Returns the hash table size.
@@ -3272,7 +3273,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @param stream The CUDA stream that is used to execute the operation.
    * @return The table size.
    */
-  size_type size(cudaStream_t stream = 0) const {
+  size_type size(hipStream_t stream = 0) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<read_shared_lock>(mutex_, stream);
@@ -3293,9 +3294,9 @@ class HashTable : public HashTableBase<K, V, S> {
     sumOp.sum(N, table_->buckets_size, d_total_size, stream);
 
     int64_t h_total_size = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&h_total_size, d_total_size, sizeof(int64_t),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipMemcpyAsync(&h_total_size, d_total_size, sizeof(int64_t),
+                               hipMemcpyDeviceToHost, stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
 
     CudaCheckError();
     return static_cast<size_type>(h_total_size);
@@ -3309,19 +3310,19 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   template <template <typename, typename> class PredFunctor>
   void size_if(const key_type& pattern, const score_type& threshold,
-               size_type* d_counter, cudaStream_t stream = 0) const {
+               size_type* d_counter, hipStream_t stream = 0) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
       lock_ptr = std::make_unique<read_shared_lock>(mutex_, stream);
     }
-    CUDA_CHECK(cudaMemsetAsync(d_counter, 0, sizeof(size_type), stream));
+    CUDA_CHECK(hipMemsetAsync(d_counter, 0, sizeof(size_type), stream));
 
     size_t grid_size = SAFE_GET_GRID_SIZE(capacity(), options_.block_size);
     grid_size = std::min(grid_size,
                          static_cast<size_t>(sm_cnt_ * max_threads_per_block_ /
                                              options_.block_size));
-    size_if_kernel<key_type, value_type, score_type, PredFunctor>
-        <<<grid_size, options_.block_size, 0, stream>>>(
+   hipLaunchKernelGGL(( size_if_kernel<key_type, value_type, score_type, PredFunctor>)
+        , dim3(grid_size), dim3(options_.block_size), 0, stream, 
             d_table_, table_->buckets, pattern, threshold, d_counter);
     CudaCheckError();
   }
@@ -3351,7 +3352,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @param new_capacity The requested capacity for the hash table.
    * @param stream The CUDA stream that is used to execute the operation.
    */
-  void reserve(const size_type new_capacity, cudaStream_t stream = 0) {
+  void reserve(const size_type new_capacity, hipStream_t stream = 0) {
     if (reach_max_capacity_ || new_capacity > options_.max_capacity) {
       reach_max_capacity_ = (capacity() * 2 > options_.max_capacity);
       return;
@@ -3365,23 +3366,23 @@ class HashTable : public HashTableBase<K, V, S> {
 
       // Once we have exclusive access, make sure that pending GPU calls have
       // been processed.
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
 
       while (capacity() < new_capacity &&
              capacity() * 2 <= options_.max_capacity) {
         double_capacity<key_type, value_type, score_type>(&table_, allocator_);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(hipDeviceSynchronize());
         sync_table_configuration();
 
         const size_t block_size = options_.block_size;
         const size_t N = TILE_SIZE * table_->buckets_num / 2;
         const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
 
-        rehash_kernel_for_fast_mode<key_type, value_type, score_type, TILE_SIZE>
-            <<<grid_size, block_size, 0, stream>>>(d_table_, table_->buckets,
+       hipLaunchKernelGGL(( rehash_kernel_for_fast_mode<key_type, value_type, score_type, TILE_SIZE>)
+            , dim3(grid_size), dim3(block_size), 0, stream, d_table_, table_->buckets,
                                                    N);
       }
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
       reach_max_capacity_ = (capacity() * 2 > options_.max_capacity);
     }
     CudaCheckError();
@@ -3395,7 +3396,7 @@ class HashTable : public HashTableBase<K, V, S> {
    *
    * @return The load factor
    */
-  float load_factor(cudaStream_t stream = 0) const {
+  float load_factor(hipStream_t stream = 0) const {
     return static_cast<float>((size(stream) * 1.0) / (capacity() * 1.0));
   }
 
@@ -3461,7 +3462,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   size_type save(BaseKVFile<K, V, S>* file,
                  const size_t max_workspace_size = 1L * 1024 * 1024,
-                 cudaStream_t stream = 0) const {
+                 hipStream_t stream = 0) const {
     const size_type tuple_size{sizeof(key_type) + sizeof(score_type) +
                                sizeof(value_type) * dim()};
     MERLIN_CHECK(max_workspace_size >= tuple_size,
@@ -3501,33 +3502,33 @@ class HashTable : public HashTableBase<K, V, S> {
     size_type total_count{0};
     for (size_type i{0}; i < total_size; i += n) {
       // Dump the next batch to workspace, and then write it to the file.
-      CUDA_CHECK(cudaMemsetAsync(d_count, 0, sizeof(size_type), stream));
+      CUDA_CHECK(hipMemsetAsync(d_count, 0, sizeof(size_type), stream));
 
-      dump_kernel<key_type, value_type, score_type>
-          <<<grid_size, block_size, shared_size, stream>>>(
+     hipLaunchKernelGGL(( dump_kernel<key_type, value_type, score_type>)
+          , dim3(grid_size), dim3(block_size), shared_size, stream, 
               d_table_, table_->buckets, d_keys, d_values, d_scores, i,
               std::min(total_size - i, n), d_count);
 
       size_type count;
-      CUDA_CHECK(cudaMemcpyAsync(&count, d_count, sizeof(size_type),
-                                 cudaMemcpyDeviceToHost, stream));
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipMemcpyAsync(&count, d_count, sizeof(size_type),
+                                 hipMemcpyDeviceToHost, stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
 
       if (count == n) {
-        CUDA_CHECK(cudaMemcpyAsync(h_keys, d_keys, host_ws_size,
-                                   cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_keys, d_keys, host_ws_size,
+                                   hipMemcpyDeviceToHost, stream));
       } else {
-        CUDA_CHECK(cudaMemcpyAsync(h_keys, d_keys, sizeof(key_type) * count,
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_scores, d_scores,
+        CUDA_CHECK(hipMemcpyAsync(h_keys, d_keys, sizeof(key_type) * count,
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_scores, d_scores,
                                    sizeof(score_type) * count,
-                                   cudaMemcpyDeviceToHost, stream));
-        CUDA_CHECK(cudaMemcpyAsync(h_values, d_values,
+                                   hipMemcpyDeviceToHost, stream));
+        CUDA_CHECK(hipMemcpyAsync(h_values, d_values,
                                    sizeof(value_type) * dim() * count,
-                                   cudaMemcpyDeviceToHost, stream));
+                                   hipMemcpyDeviceToHost, stream));
       }
 
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       file->write(count, dim(), h_keys, h_values, h_scores);
       total_count += count;
     }
@@ -3548,7 +3549,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   size_type load(BaseKVFile<K, V, S>* file,
                  const size_t max_workspace_size = 1L * 1024 * 1024,
-                 cudaStream_t stream = 0) {
+                 hipStream_t stream = 0) {
     const size_type tuple_size{sizeof(key_type) + sizeof(score_type) +
                                sizeof(value_type) * dim()};
     MERLIN_CHECK(max_workspace_size >= tuple_size,
@@ -3579,17 +3580,17 @@ class HashTable : public HashTableBase<K, V, S> {
     size_type total_count{0};
     do {
       if (count == n) {
-        CUDA_CHECK(cudaMemcpyAsync(d_keys, h_keys, ws_size,
-                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(hipMemcpyAsync(d_keys, h_keys, ws_size,
+                                   hipMemcpyHostToDevice, stream));
       } else {
-        CUDA_CHECK(cudaMemcpyAsync(d_keys, h_keys, sizeof(key_type) * count,
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_scores, h_scores,
+        CUDA_CHECK(hipMemcpyAsync(d_keys, h_keys, sizeof(key_type) * count,
+                                   hipMemcpyHostToDevice, stream));
+        CUDA_CHECK(hipMemcpyAsync(d_scores, h_scores,
                                    sizeof(score_type) * count,
-                                   cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(d_values, h_values,
+                                   hipMemcpyHostToDevice, stream));
+        CUDA_CHECK(hipMemcpyAsync(d_values, h_values,
                                    sizeof(value_type) * dim() * count,
-                                   cudaMemcpyHostToDevice, stream));
+                                   hipMemcpyHostToDevice, stream));
       }
 
       set_global_epoch(static_cast<S>(IGNORED_GLOBAL_EPOCH));
@@ -3597,7 +3598,7 @@ class HashTable : public HashTableBase<K, V, S> {
       total_count += count;
 
       // Read next batch.
-      CUDA_CHECK(cudaStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
       count = file->read(n, dim(), h_keys, h_values, h_scores);
     } while (count > 0);
 
@@ -3637,7 +3638,7 @@ class HashTable : public HashTableBase<K, V, S> {
    * @return The evaluated load factor
    */
   inline float fast_load_factor(const size_type delta = 0,
-                                cudaStream_t stream = 0,
+                                hipStream_t stream = 0,
                                 const bool need_lock = true) const {
     std::unique_ptr<read_shared_lock> lock_ptr;
     if (options_.api_lock) {
@@ -3663,9 +3664,9 @@ class HashTable : public HashTableBase<K, V, S> {
     sumOp.sum(N, table_->buckets_size, d_total_size, stream);
 
     int64_t h_total_size = 0;
-    CUDA_CHECK(cudaMemcpyAsync(&h_total_size, d_total_size, sizeof(int64_t),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(hipMemcpyAsync(&h_total_size, d_total_size, sizeof(int64_t),
+                               hipMemcpyDeviceToHost, stream));
+    CUDA_CHECK(hipStreamSynchronize(stream));
     CudaCheckError();
     return static_cast<float>((delta * 1.0) / (capacity() * 1.0) +
                               (h_total_size * 1.0) /
@@ -3711,7 +3712,7 @@ class HashTable : public HashTableBase<K, V, S> {
    */
   inline void sync_table_configuration() {
     CUDA_CHECK(
-        cudaMemcpy(d_table_, table_, sizeof(TableCore), cudaMemcpyDefault));
+        hipMemcpy(d_table_, table_, sizeof(TableCore), hipMemcpyDefault));
   }
 
  private:

@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -17,6 +18,7 @@
 #pragma once
 
 #include "kernel_utils.cuh"
+#include "util.h"
 
 namespace nv {
 namespace merlin {
@@ -48,9 +50,9 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
                                          const int dim,
                                          const K* __restrict keys,
                                          bool* __restrict founds, size_t n) {
-  constexpr int GROUP_SIZE = 32;
+  constexpr int GROUP_SIZE = 64;
   constexpr int RESERVE = 16;
-  constexpr int BLOCK_SIZE = 128;
+  constexpr int BLOCK_SIZE = 256;
   constexpr int BUCKET_SIZE = 128;
   constexpr int GROUP_NUM = BLOCK_SIZE / GROUP_SIZE;
   constexpr int DIGEST_SPAN = BUCKET_SIZE / 4;
@@ -66,9 +68,10 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
   __shared__ K sm_possible_keys[2][GROUP_NUM * RESERVE];
 
   // Initialization
-  auto g = cg::tiled_partition<GROUP_SIZE>(cg::this_thread_block());
+#define GROUP_BALLOT(pred) __ballot(pred)
+#define GROUP_SHFL(var, src_lane) __shfl(var, src_lane)  
   int groupID = threadIdx.x / GROUP_SIZE;
-  int rank = g.thread_rank();
+  int rank = threadIdx.x % GROUP_SIZE;
   int key_idx_base = (blockIdx.x * blockDim.x) + groupID * GROUP_SIZE;
   if (key_idx_base >= n) return;
   int loop_num =
@@ -93,8 +96,10 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
   uint8_t* digests_ptr =
       reinterpret_cast<uint8_t*>(sm_keys_ptr[groupID * GROUP_SIZE]) -
       BUCKET_SIZE;
-  __pipeline_memcpy_async(sm_probing_digests[0] + groupID * DIGEST_SPAN + rank,
-                          digests_ptr + rank * 4, sizeof(uint32_t));
+  int digest_word_idx = rank / 2;
+  __pipeline_memcpy_async(
+      sm_probing_digests[0] + groupID * DIGEST_SPAN + digest_word_idx,
+      digests_ptr + digest_word_idx * 4, sizeof(uint32_t));
   __pipeline_commit();
   __pipeline_commit();
 
@@ -106,9 +111,11 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
       uint8_t* digests_ptr =
           reinterpret_cast<uint8_t*>(sm_keys_ptr[key_idx_block + 1]) -
           BUCKET_SIZE;
-      __pipeline_memcpy_async(
-          sm_probing_digests[diff_buf(i)] + groupID * DIGEST_SPAN + rank,
-          digests_ptr + rank * 4, sizeof(uint32_t));
+        int digest_word_idx_next = rank / 2;
+        __pipeline_memcpy_async(
+          sm_probing_digests[diff_buf(i)] + groupID * DIGEST_SPAN +
+            digest_word_idx_next,
+          digests_ptr + digest_word_idx_next * 4, sizeof(uint32_t));
     }
     __pipeline_commit();
 
@@ -117,28 +124,32 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
     uint32_t target_digests = __byte_perm(target_digest, target_digest, 0x0000);
     sm_counts[key_idx_block] = 0;
     __pipeline_wait_prior(2);
+    int digest_word_idx_cur = rank / 2;
     uint32_t probing_digests =
-        sm_probing_digests[same_buf(i)][groupID * DIGEST_SPAN + rank];
+        sm_probing_digests[same_buf(i)][groupID * DIGEST_SPAN + digest_word_idx_cur];
     uint32_t find_result_ = __vcmpeq4(probing_digests, target_digests);
-    uint32_t find_result = 0;
-    if ((find_result_ & 0x01) != 0) find_result |= 0x01;
-    if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
-    if ((find_result_ & 0x010000) != 0) find_result |= 0x04;
-    if ((find_result_ & 0x01000000) != 0) find_result |= 0x08;
+    unsigned long long find_result = 0;
+    if ((rank & 1) == 0) {
+      if ((find_result_ & 0x01) != 0) find_result |= 0x01;
+      if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
+    } else {
+      if ((find_result_ & 0x010000) != 0) find_result |= 0x01;
+      if ((find_result_ & 0x01000000) != 0) find_result |= 0x02;
+    }
     int find_number = __popc(find_result);
     int group_base = 0;
     if (find_number > 0) {
       group_base = atomicAdd(sm_counts + key_idx_block, find_number);
     }
     bool gt_reserve = (group_base + find_number) > RESERVE;
-    int gt_vote = g.ballot(gt_reserve);
+    unsigned long long gt_vote = GROUP_BALLOT(gt_reserve);
     K* key_ptr = sm_keys_ptr[key_idx_block];
     if (gt_vote == 0) {
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
-          int key_pos = rank * 4 + digest_idx;
+          int key_pos = rank * 2 + digest_idx;
           __pipeline_memcpy_async(
               sm_possible_keys[same_buf(i)] + (groupID * RESERVE + group_base),
               key_ptr + key_pos, sizeof(K));
@@ -150,13 +161,13 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
     } else {
       K target_key = sm_target_keys[key_idx_block];
       sm_counts[key_idx_block] = 0;
-      int found_vote = 0;
+      unsigned long long found_vote = 0;
       bool found = false;
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
-          int key_pos = rank * 4 + digest_idx;
+          int key_pos = rank * 2 + digest_idx;
           K possible_key = key_ptr[key_pos];
           if (possible_key == target_key) {
             found = true;
@@ -164,12 +175,13 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
             sm_possible_keys[same_buf(i)][groupID * RESERVE] = possible_key;
           }
         }
-        found_vote = g.ballot(found);
+        found_vote = GROUP_BALLOT(found);
+        // found_vote = tile_ballot<GROUP_SIZE>(g, found);
         if (found_vote) {
           break;
         }
         found_vote = digest_idx >= 0;
-      } while (g.any(found_vote));
+      } while (GROUP_BALLOT(found_vote));
     }
     __pipeline_commit();
 
@@ -188,7 +200,7 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
           found_flag = true;
         }
       }
-      int found_vote = g.ballot(found_flag);
+      unsigned long long found_vote = GROUP_BALLOT(found_flag);
       founds[key_idx_grid] = (found_vote > 0);
     }
   }  // End loop
@@ -208,20 +220,19 @@ __global__ void contains_kernel_pipeline(Bucket<K, V, S>* buckets,
         found_flag = true;
       }
     }
-    int found_vote = g.ballot(found_flag);
+    unsigned long long found_vote = GROUP_BALLOT(found_flag);
     founds[key_idx_grid] = (found_vote > 0);
   }
-
 }  // End function
 
 template <typename K, typename V, typename S>
 struct LaunchPipelineContains {
   static void launch_kernel(ContainsKernelParams<K, V, S>& params,
-                            cudaStream_t& stream) {
-    constexpr int BLOCK_SIZE = 128;
+                            hipStream_t& stream) {
+    constexpr int BLOCK_SIZE = 256;
     // Using 32 threads to deal with one key
-    contains_kernel_pipeline<K, V, S>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+   hipLaunchKernelGGL(( contains_kernel_pipeline<K, V, S>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             params.buckets, params.buckets_num, params.dim, params.keys,
             params.founds, params.n);
   }
@@ -231,12 +242,12 @@ template <typename K, typename V, typename S = uint64_t,
           typename ArchTag = Sm80>
 struct SelectPipelineContainsKernel {
   static void select_kernel(ContainsKernelParams<K, V, S>& params,
-                            cudaStream_t& stream) {
+                            hipStream_t& stream) {
     LaunchPipelineContains<K, V, S>::launch_kernel(params, stream);
   }
 };
 
-template <class K, class V, class S, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, uint32_t TILE_SIZE = 64>
 __global__ void contains_kernel(const Table<K, V, S>* __restrict table,
                                 Bucket<K, V, S>* buckets,
                                 const size_t bucket_max_size,
@@ -283,21 +294,21 @@ struct SelectContainsKernel {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              bool* __restrict found) {
     if (load_factor <= 0.75) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      contains_kernel<K, V, S, tile_size><<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( contains_kernel<K, V, S, tile_size>), dim3(grid_size), dim3(block_size), 0, stream, 
           table, buckets, bucket_max_size, buckets_num, dim, keys, found, N);
     } else {
-      const unsigned int tile_size = 16;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      contains_kernel<K, V, S, tile_size><<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( contains_kernel<K, V, S, tile_size>), dim3(grid_size), dim3(block_size), 0, stream, 
           table, buckets, bucket_max_size, buckets_num, dim, keys, found, N);
     }
     return;

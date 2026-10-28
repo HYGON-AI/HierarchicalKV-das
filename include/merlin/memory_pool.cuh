@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2022, NVIDIA CORPORATION.
  *
@@ -48,13 +49,13 @@ struct AllocatorBase {
   }
 
   inline static async_unique_ptr make_unique(size_t n, BaseAllocator* allocator,
-                                             cudaStream_t stream) {
+                                             hipStream_t stream) {
     return {Allocator::alloc(n, allocator, stream),
             [stream, allocator](type* p) { Allocator::free(p, allocator); }};
   }
 
   inline static shared_ptr make_shared(size_t n, BaseAllocator* allocator,
-                                       cudaStream_t stream = 0) {
+                                       hipStream_t stream = 0) {
     return {Allocator::alloc(n, allocator, stream),
             [stream, allocator](type* p) {
               Allocator::free(p, allocator, stream);
@@ -74,14 +75,14 @@ struct StandardAllocator final : AllocatorBase<T, StandardAllocator<T>> {
   static constexpr const char* name{"StandardAllocator"};
 
   inline static type* alloc(size_t n, BaseAllocator* allocator,
-                            cudaStream_t stream = 0) {
+                            hipStream_t stream = 0) {
     type* ptr;
     allocator->alloc(MemoryType::Host, (void**)&ptr, n * sizeof(T));
     return ptr;
   }
 
   inline static void free(type* ptr, BaseAllocator* allocator,
-                          cudaStream_t stream = 0) {
+                          hipStream_t stream = 0) {
     allocator->free(MemoryType::Host, ptr);
   }
 };
@@ -96,14 +97,14 @@ struct HostAllocator final : AllocatorBase<T, HostAllocator<T>> {
   static constexpr const char* name{"HostAllocator"};
 
   inline static type* alloc(size_t n, BaseAllocator* allocator,
-                            cudaStream_t stream = 0) {
+                            hipStream_t stream = 0) {
     void* ptr;
     allocator->alloc(MemoryType::Pinned, (void**)&ptr, n * sizeof(T));
     return reinterpret_cast<type*>(ptr);
   }
 
   inline static void free(type* ptr, BaseAllocator* allocator,
-                          cudaStream_t stream = 0) {
+                          hipStream_t stream = 0) {
     allocator->free(MemoryType::Pinned, ptr);
   }
 };
@@ -119,7 +120,7 @@ struct DeviceAllocator final : AllocatorBase<T, DeviceAllocator<T>> {
   static constexpr const char* name{"DeviceAllocator"};
 
   inline static type* alloc(size_t n, BaseAllocator* allocator,
-                            cudaStream_t stream = 0) {
+                            hipStream_t stream = 0) {
     void* ptr;
 
     allocator->alloc_async(MemoryType::Device, (void**)&ptr, n * sizeof(T),
@@ -128,7 +129,7 @@ struct DeviceAllocator final : AllocatorBase<T, DeviceAllocator<T>> {
   }
 
   inline static void free(type* ptr, BaseAllocator* allocator,
-                          cudaStream_t stream = 0) {
+                          hipStream_t stream = 0) {
     allocator->free_async(MemoryType::Device, ptr, stream);
   }
 };
@@ -209,7 +210,7 @@ class MemoryPool final {
    public:
     inline Workspace() : pool_{nullptr}, buffer_size_{0}, stream_{0} {}
 
-    inline Workspace(pool_type* pool, cudaStream_t stream)
+    inline Workspace(pool_type* pool, hipStream_t stream)
         : pool_{pool}, buffer_size_{0}, stream_{stream} {}
 
     Workspace(const Workspace&) = delete;
@@ -267,7 +268,7 @@ class MemoryPool final {
    protected:
     pool_type* pool_;
     size_t buffer_size_;
-    cudaStream_t stream_;
+    hipStream_t stream_;
     Container buffers_;
   };
 
@@ -294,7 +295,7 @@ class MemoryPool final {
 
    private:
     inline StaticWorkspace(pool_type* pool, size_t requested_buffer_size,
-                           cudaStream_t stream)
+                           hipStream_t stream)
         : base_type(pool, stream) {
       auto& buffers = this->buffers_;
       this->buffer_size_ = pool->get_raw(buffers.begin(), buffers.end(),
@@ -324,7 +325,7 @@ class MemoryPool final {
 
    private:
     inline DynamicWorkspace(pool_type* pool, size_t n,
-                            size_t requested_buffer_size, cudaStream_t stream)
+                            size_t requested_buffer_size, hipStream_t stream)
         : base_type(pool, stream) {
       auto& buffers = this->buffers_;
       buffers.resize(n);
@@ -341,7 +342,7 @@ class MemoryPool final {
     // Create enough events, so we have one per potentially pending buffer.
     ready_events_.resize(options_.max_pending);
     for (auto& ready_event : ready_events_) {
-      CUDA_CHECK(cudaEventCreate(&ready_event));
+      CUDA_CHECK(hipEventCreate(&ready_event));
     }
 
     // Preallocate pending.
@@ -354,7 +355,7 @@ class MemoryPool final {
 
     // Free event and buffer memory.
     for (auto& ready_event : ready_events_) {
-      CUDA_CHECK(cudaEventDestroy(ready_event));
+      CUDA_CHECK(hipEventDestroy(ready_event));
     }
 
     // Any remaining buffers need to be properly unallocated.
@@ -382,7 +383,7 @@ class MemoryPool final {
     return pending_.size();
   }
 
-  void await_pending(cudaStream_t stream = 0) {
+  void await_pending(hipStream_t stream = 0) {
     std::lock_guard<std::mutex> lock(mutex_);
     while (!pending_.empty()) {
       collect_pending_unsafe(stream);
@@ -402,7 +403,7 @@ class MemoryPool final {
   }
 
   inline std::unique_ptr<alloc_type, std::function<void(alloc_type*)>>
-  get_unique(size_t requested_buffer_size, cudaStream_t stream = 0) {
+  get_unique(size_t requested_buffer_size, hipStream_t stream = 0) {
     alloc_type* ptr;
     const size_t allocation_size =
         get_raw(&ptr, (&ptr) + 1, requested_buffer_size, stream);
@@ -412,7 +413,7 @@ class MemoryPool final {
   }
 
   inline std::shared_ptr<alloc_type> get_shared(size_t requested_buffer_size,
-                                                cudaStream_t stream = 0) {
+                                                hipStream_t stream = 0) {
     alloc_type* ptr;
     const size_t allocation_size =
         get_raw(&ptr, (&ptr) + 1, requested_buffer_size, stream);
@@ -423,24 +424,24 @@ class MemoryPool final {
 
   template <size_t N>
   inline StaticWorkspace<N> get_workspace(size_t requested_buffer_size,
-                                          cudaStream_t stream = 0) {
+                                          hipStream_t stream = 0) {
     return {this, requested_buffer_size, stream};
   }
 
   inline DynamicWorkspace get_workspace(size_t n, size_t requested_buffer_size,
-                                        cudaStream_t stream = 0) {
+                                        hipStream_t stream = 0) {
     return {this, n, requested_buffer_size, stream};
   }
 
   friend std::ostream& operator<< <Allocator>(std::ostream&, const MemoryPool&);
 
  private:
-  inline void collect_pending_unsafe(cudaStream_t stream) {
+  inline void collect_pending_unsafe(hipStream_t stream) {
     auto it{std::remove_if(
         pending_.begin(), pending_.end(), [this, stream](const auto& pending) {
-          const cudaError_t state{cudaEventQuery(std::get<2>(pending))};
+          const hipError_t state{hipEventQuery(std::get<2>(pending))};
           switch (state) {
-            case cudaSuccess:
+            case hipSuccess:
               // Stock buffers and destroy those that are no
               // longer needed, but only if the allocation_size
               // is still the same as the current buffer_size.
@@ -452,7 +453,7 @@ class MemoryPool final {
               }
               ready_events_.emplace_back(std::get<2>(pending));
               return true;
-            case cudaErrorNotReady:
+            case hipErrorNotReady:
               return false;
             default:
               CUDA_CHECK(state);
@@ -462,7 +463,7 @@ class MemoryPool final {
     pending_.erase(it, pending_.end());
   }
 
-  inline void clear_stock_unsafe(cudaStream_t stream) {
+  inline void clear_stock_unsafe(hipStream_t stream) {
     for (auto& ptr : stock_) {
       Allocator::free(ptr, allocator_, stream);
     }
@@ -471,7 +472,7 @@ class MemoryPool final {
 
   template <class Iterator>
   inline size_t get_raw(Iterator first, Iterator const last,
-                        size_t requested_buffer_size, cudaStream_t stream) {
+                        size_t requested_buffer_size, hipStream_t stream) {
     // Get pre-allocated buffers if stock available.
     size_t allocation_size;
     {
@@ -514,7 +515,7 @@ class MemoryPool final {
 
   template <class Iterator>
   inline void put_raw(Iterator first, Iterator const last,
-                      size_t allocation_size, cudaStream_t stream) {
+                      size_t allocation_size, hipStream_t stream) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // If allocation_size of the workspace differs from the current buffer_size
@@ -531,10 +532,10 @@ class MemoryPool final {
     // where it was created, it could happen that the stream was destroyed when
     // we return the buffer ownership. This will prevent that.
     //
-    // Note that `cudaStreamQuery` isn't designed to track stream destruction.
+    // Note that `hipStreamQuery` isn't designed to track stream destruction.
     // This check is a last resort, and may not work reliably. The recommended
     // best practice is to simply ensure streams you use are alive and well.
-    if (cudaStreamQuery(stream) != cudaErrorInvalidResourceHandle) {
+    if (hipStreamQuery(stream) != hipErrorInvalidResourceHandle) {
       for (; first != last; ++first) {
         // Avoid adding already deallocated buffers.
         if (*first == nullptr) {
@@ -551,14 +552,14 @@ class MemoryPool final {
         }
 
         // Queue buffer.
-        cudaEvent_t ready_event{ready_events_.back()};
+        hipEvent_t ready_event{ready_events_.back()};
         ready_events_.pop_back();
-        CUDA_CHECK(cudaEventRecord(ready_event, stream));
+        CUDA_CHECK(hipEventRecord(ready_event, stream));
         pending_.emplace_back(*first, allocation_size, ready_event);
       }
     } else {
       // Without stream context, we must force a hard sync with the GPU.
-      CUDA_CHECK(cudaDeviceSynchronize());
+      CUDA_CHECK(hipDeviceSynchronize());
 
       for (; first != last; ++first) {
         // Avoid adding already deallocated buffers.
@@ -581,9 +582,9 @@ class MemoryPool final {
   mutable std::mutex mutex_;
   size_t buffer_size_{1};
   std::vector<alloc_type*> stock_;
-  std::vector<cudaEvent_t> ready_events_;
+  std::vector<hipEvent_t> ready_events_;
 
-  std::vector<std::tuple<alloc_type*, size_t, cudaEvent_t>> pending_;
+  std::vector<std::tuple<alloc_type*, size_t, hipEvent_t>> pending_;
   BaseAllocator* allocator_;
 };
 

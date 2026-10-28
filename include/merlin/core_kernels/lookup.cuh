@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -120,9 +121,9 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
     Bucket<K, V, S>* buckets, const size_t buckets_num, const int dim,
     const K* __restrict keys, VecV* __restrict values, S* __restrict scores,
     FoundFunctor found_functor, size_t n) {
-  constexpr int GROUP_SIZE = 32;
+  constexpr int GROUP_SIZE = 64;
   constexpr int RESERVE = 16;
-  constexpr int BLOCK_SIZE = 128;
+  constexpr int BLOCK_SIZE = 256;
   constexpr int BUCKET_SIZE = 128;
   constexpr int GROUP_NUM = BLOCK_SIZE / GROUP_SIZE;
   constexpr int DIGEST_SPAN = BUCKET_SIZE / 4;
@@ -142,9 +143,11 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
   __shared__ VecV sm_vector[2][GROUP_NUM][VALUE_BUF];
 
   // Initialization
-  auto g = cg::tiled_partition<GROUP_SIZE>(cg::this_thread_block());
+#define GROUP_BALLOT(pred) __ballot(pred)
+#define GROUP_SHFL(var, src_lane) __shfl(var, src_lane)
+
   int groupID = threadIdx.x / GROUP_SIZE;
-  int rank = g.thread_rank();
+  int rank = threadIdx.x % GROUP_SIZE;
   int key_idx_base = (blockIdx.x * blockDim.x) + groupID * GROUP_SIZE;
   if (key_idx_base >= n) return;
   int loop_num =
@@ -171,8 +174,12 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
   uint8_t* digests_ptr =
       reinterpret_cast<uint8_t*>(sm_keys_ptr[groupID * GROUP_SIZE]) -
       BUCKET_SIZE;
-  __pipeline_memcpy_async(sm_probing_digests[0] + groupID * DIGEST_SPAN + rank,
-                          digests_ptr + rank * 4, sizeof(uint32_t));
+    // With GROUP_SIZE=64 we split 128 slots as 64 lanes * 2 slots each.
+    // Each uint32 contains 4 digests; two lanes share one uint32 word.
+    int digest_word_idx = rank / 2;
+    __pipeline_memcpy_async(
+      sm_probing_digests[0] + groupID * DIGEST_SPAN + digest_word_idx,
+      digests_ptr + digest_word_idx * 4, sizeof(uint32_t));
   __pipeline_commit();
   // Padding, meet the param of the first `__pipeline_wait_prior`
   // in the first loop.
@@ -187,9 +194,11 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
       uint8_t* digests_ptr =
           reinterpret_cast<uint8_t*>(sm_keys_ptr[key_idx_block + 1]) -
           BUCKET_SIZE;
-      __pipeline_memcpy_async(
-          sm_probing_digests[diff_buf(i)] + groupID * DIGEST_SPAN + rank,
-          digests_ptr + rank * 4, sizeof(uint32_t));
+        int digest_word_idx_next = rank / 2;
+        __pipeline_memcpy_async(
+          sm_probing_digests[diff_buf(i)] + groupID * DIGEST_SPAN +
+            digest_word_idx_next,
+          digests_ptr + digest_word_idx_next * 4, sizeof(uint32_t));
     }
     __pipeline_commit();
 
@@ -198,28 +207,36 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
     uint32_t target_digests = __byte_perm(target_digest, target_digest, 0x0000);
     sm_counts[key_idx_block] = 0;
     __pipeline_wait_prior(3);
+    int digest_word_idx_cur = rank / 2;
     uint32_t probing_digests =
-        sm_probing_digests[same_buf(i)][groupID * DIGEST_SPAN + rank];
+        sm_probing_digests[same_buf(i)][groupID * DIGEST_SPAN +
+                                        digest_word_idx_cur];
     uint32_t find_result_ = __vcmpeq4(probing_digests, target_digests);
-    uint32_t find_result = 0;
-    if ((find_result_ & 0x01) != 0) find_result |= 0x01;
-    if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
-    if ((find_result_ & 0x010000) != 0) find_result |= 0x04;
-    if ((find_result_ & 0x01000000) != 0) find_result |= 0x08;
+    // For GROUP_SIZE=64 each lane is responsible for 2 slots. We map the
+    // 4-byte compare result to 2 bits per lane: even lanes -> low two bytes,
+    // odd lanes -> high two bytes.
+    unsigned long long find_result = 0;
+    if ((rank & 1) == 0) {
+      if ((find_result_ & 0x01) != 0) find_result |= 0x01;
+      if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
+    } else {
+      if ((find_result_ & 0x010000) != 0) find_result |= 0x01;
+      if ((find_result_ & 0x01000000) != 0) find_result |= 0x02;
+    }
     int find_number = __popc(find_result);
     int group_base = 0;
     if (find_number > 0) {
       group_base = atomicAdd(sm_counts + key_idx_block, find_number);
     }
     bool gt_reserve = (group_base + find_number) > RESERVE;
-    int gt_vote = g.ballot(gt_reserve);
+    unsigned long long gt_vote = GROUP_BALLOT(gt_reserve);
     K* key_ptr = sm_keys_ptr[key_idx_block];
     if (gt_vote == 0) {
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
-          int key_pos = rank * 4 + digest_idx;
+          int key_pos = rank * 2 + digest_idx;  // each lane covers 2 slots
           sm_possible_pos[same_buf(i)][groupID * RESERVE + group_base] =
               key_pos;
           __pipeline_memcpy_async(
@@ -233,13 +250,13 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
     } else {
       K target_key = sm_target_keys[key_idx_block];
       sm_counts[key_idx_block] = 0;
-      int found_vote = 0;
+      unsigned long long found_vote = 0;
       bool found = false;
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;  // 0 or 1
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
-          int key_pos = rank * 4 + digest_idx;
+          int key_pos = rank * 2 + digest_idx;
           K possible_key = key_ptr[key_pos];
           if (possible_key == target_key) {
             found = true;
@@ -248,12 +265,12 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
             sm_possible_keys[same_buf(i)][groupID * RESERVE] = possible_key;
           }
         }
-        found_vote = g.ballot(found);
+        found_vote = GROUP_BALLOT(found);
         if (found_vote) {
           break;
         }
         found_vote = digest_idx >= 0;
-      } while (g.any(found_vote));
+      } while (GROUP_BALLOT(found_vote));
     }
     __pipeline_commit();
 
@@ -278,12 +295,12 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
                              score_ptr + key_pos);
         }
       }
-      int found_vote = g.ballot(found_flag);
+      unsigned long long found_vote = GROUP_BALLOT(found_flag);
       if (found_vote) {
         VecV* v_dst = sm_vector[diff_buf(i)][groupID];
         sm_founds[key_idx_block] = 1;
-        int src_lane = __ffs(found_vote) - 1;
-        int target_pos = g.shfl(key_pos, src_lane);
+        int src_lane = __ffsll(found_vote) - 1;
+        int target_pos = GROUP_SHFL(key_pos, src_lane);
         VecV* v_src = value_ptr + target_pos * dim;
         CopyValue::ldg_sts(rank, v_dst, v_src, dim);
       }
@@ -327,11 +344,11 @@ __global__ void lookup_kernel_with_io_pipeline_v1(
                            score_ptr + key_pos);
       }
     }
-    int found_vote = g.ballot(found_flag);
+    unsigned long long found_vote = GROUP_BALLOT(found_flag);
     if (found_vote) {
       sm_founds[key_idx_block] = 1;
-      int src_lane = __ffs(found_vote) - 1;
-      int target_pos = g.shfl(key_pos, src_lane);
+      int src_lane = __ffsll(found_vote) - 1;
+      int target_pos = GROUP_SHFL(key_pos, src_lane);
       VecV* v_src = value_ptr + target_pos * dim;
       VecV* v_dst = sm_vector[diff_buf(loop_num)][groupID];
       CopyValue::ldg_sts(rank, v_dst, v_src, dim);
@@ -387,7 +404,7 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
     Bucket<K, V, S>* buckets, const size_t buckets_num, const int dim,
     const K* __restrict keys, VecV* __restrict values, S* __restrict scores,
     FoundFunctor found_functor, size_t n) {
-  constexpr int GROUP_SIZE = 16;
+  constexpr int GROUP_SIZE = 64;
   constexpr int RESERVE = 8;
   constexpr int BLOCK_SIZE = 128;
   constexpr int BUCKET_SIZE = 128;
@@ -469,7 +486,7 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
     uint32_t probing_digests =
         sm_probing_digests[same_buf(i)][groupID * DIGEST_SPAN + rank];
     uint32_t find_result_ = __vcmpeq4(probing_digests, target_digests);
-    uint32_t find_result = 0;
+    unsigned long long find_result = 0;
     if ((find_result_ & 0x01) != 0) find_result |= 0x01;
     if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
     if ((find_result_ & 0x010000) != 0) find_result |= 0x04;
@@ -487,11 +504,11 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
       group_base = atomicAdd(sm_counts + key_idx_block, find_number);
     }
     bool gt_reserve = (group_base + find_number) > RESERVE;
-    int gt_vote = g.ballot(gt_reserve);
+    unsigned long long gt_vote = g.ballot(gt_reserve);
     K* key_ptr = sm_keys_ptr[key_idx_block];
     if (gt_vote == 0) {
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -510,10 +527,10 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
     } else {
       K target_key = sm_target_keys[key_idx_block];
       sm_counts[key_idx_block] = 0;
-      int found_vote = 0;
+      unsigned long long found_vote = 0;
       bool found = false;
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -528,6 +545,7 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
           }
         }
         found_vote = g.ballot(found);
+        // found_vote = tile_ballot<GROUP_SIZE>(g, found);
         if (found_vote) {
           break;
         }
@@ -557,10 +575,10 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
                              score_ptr + key_pos);
         }
       }
-      int found_vote = g.ballot(found_flag);
+      unsigned long long found_vote = g.ballot(found_flag);
       if (found_vote) {
         sm_founds[key_idx_block] = 1;
-        int src_lane = __ffs(found_vote) - 1;
+        int src_lane = __ffsll(found_vote) - 1;
         int target_pos = g.shfl(key_pos, src_lane);
         VecV* v_src = value_ptr + target_pos * dim;
         VecV* v_dst = sm_vector[diff_buf(i)][groupID];
@@ -606,10 +624,10 @@ __global__ void lookup_kernel_with_io_pipeline_v2(
                            score_ptr + key_pos);
       }
     }
-    int found_vote = g.ballot(found_flag);
+    unsigned long long found_vote = g.ballot(found_flag);
     if (found_vote) {
       sm_founds[key_idx_block] = 1;
-      int src_lane = __ffs(found_vote) - 1;
+      int src_lane = __ffsll(found_vote) - 1;
       int target_pos = g.shfl(key_pos, src_lane);
       VecV* v_src = value_ptr + target_pos * dim;
       VecV* v_dst = sm_vector[diff_buf(loop_num)][groupID];
@@ -661,37 +679,19 @@ template <typename K, typename V, typename S, typename CopyScore, typename VecV,
 struct LaunchPipelineLookupV1 {
   template <template <typename, typename, typename> typename LookupKernelParams>
   static void launch_kernel(LookupKernelParams<K, V, S>& params,
-                            cudaStream_t& stream) {
-    constexpr int BLOCK_SIZE = 128;
+                            hipStream_t& stream) {
+    constexpr int BLOCK_SIZE = 256;
     // Using 32 threads to deal with one key
     constexpr int GROUP_SIZE = 32;
     params.dim = params.dim * sizeof(V) / sizeof(VecV);
     constexpr uint32_t VecSize = ValueBufSize / sizeof(VecV);
-    if (params.dim > (GROUP_SIZE * 2)) {
-      using CopyValue = CopyValueMultipleGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v1<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+      using CopyValue = CopyValueMultipleGroup<VecV, 64>;
+     hipLaunchKernelGGL(( lookup_kernel_with_io_pipeline_v1<K, V, S, VecV, CopyScore, CopyValue,
+                                        decltype(params.found_functor), VecSize>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_num, params.dim, params.keys,
               reinterpret_cast<VecV*>(params.values), params.scores,
               params.found_functor, params.n);
-    } else if (params.dim > GROUP_SIZE) {
-      using CopyValue = CopyValueTwoGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v1<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
-              params.buckets, params.buckets_num, params.dim, params.keys,
-              reinterpret_cast<VecV*>(params.values), params.scores,
-              params.found_functor, params.n);
-    } else {
-      using CopyValue = CopyValueOneGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v1<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
-              params.buckets, params.buckets_num, params.dim, params.keys,
-              reinterpret_cast<VecV*>(params.values), params.scores,
-              params.found_functor, params.n);
-    }
   }
 };
 
@@ -700,33 +700,33 @@ template <typename K, typename V, typename S, typename CopyScore, typename VecV,
 struct LaunchPipelineLookupV2 {
   template <template <typename, typename, typename> typename LookupKernelParams>
   static void launch_kernel(LookupKernelParams<K, V, S>& params,
-                            cudaStream_t& stream) {
+                            hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
     // Using 16 threads to deal with one key
-    constexpr int GROUP_SIZE = 16;
+    constexpr int GROUP_SIZE = 64;
     params.dim = params.dim * sizeof(V) / sizeof(VecV);
     constexpr uint32_t VecSize = ValueBufSize / sizeof(VecV);
     if (params.dim > (GROUP_SIZE * 2)) {
       using CopyValue = CopyValueMultipleGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
+                                        decltype(params.found_functor), VecSize>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_num, params.dim, params.keys,
               reinterpret_cast<VecV*>(params.values), params.scores,
               params.found_functor, params.n);
     } else if (params.dim > GROUP_SIZE) {
       using CopyValue = CopyValueTwoGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
+                                        decltype(params.found_functor), VecSize>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_num, params.dim, params.keys,
               reinterpret_cast<VecV*>(params.values), params.scores,
               params.found_functor, params.n);
     } else {
       using CopyValue = CopyValueOneGroup<VecV, GROUP_SIZE>;
-      lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
-                                        decltype(params.found_functor), VecSize>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+     hipLaunchKernelGGL(( lookup_kernel_with_io_pipeline_v2<K, V, S, VecV, CopyScore, CopyValue,
+                                        decltype(params.found_functor), VecSize>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_num, params.dim, params.keys,
               reinterpret_cast<VecV*>(params.values), params.scores,
               params.found_functor, params.n);
@@ -761,7 +761,7 @@ struct SelectPipelineLookupKernelWithIO {
 
   template <template <typename, typename, typename> typename LookupKernelParams>
   static void select_kernel(LookupKernelParams<K, V, S>& params,
-                            cudaStream_t& stream) {
+                            hipStream_t& stream) {
     constexpr int BUCKET_SIZE = 128;
     constexpr uint32_t buf_size_v1 = ValueBufConfig::size_pipeline_v1;
     constexpr uint32_t buf_size_v2 = ValueBufConfig::size_pipeline_v2;
@@ -869,7 +869,7 @@ struct SelectPipelineLookupKernelWithIO {
 /* lookup with IO operation. This kernel is
  * usually used for the pure HBM mode for better performance.
  */
-template <class K, class V, class S, class FoundFunctor, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, class FoundFunctor, uint32_t TILE_SIZE = 64>
 __global__ void lookup_kernel_with_io(
     const Table<K, V, S>* __restrict table, Bucket<K, V, S>* buckets,
     const size_t bucket_max_size, const size_t buckets_num, const size_t dim,
@@ -929,25 +929,25 @@ struct SelectLookupKernelWithIOImpl {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              V* __restrict values, S* __restrict scores,
                              const FoundFunctor& found_functor) {
     if (load_factor <= 0.75) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      lookup_kernel_with_io<K, V, S, FoundFunctor, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( lookup_kernel_with_io<K, V, S, FoundFunctor, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, found_functor, N);
     } else {
-      const unsigned int tile_size = 16;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      lookup_kernel_with_io<K, V, S, FoundFunctor, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( lookup_kernel_with_io<K, V, S, FoundFunctor, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, found_functor, N);
     }
@@ -960,7 +960,7 @@ struct SelectLookupKernelWithIO {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              V* __restrict values, S* __restrict scores,
@@ -978,7 +978,7 @@ struct SelectLookupKernelWithIOV2 {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              V* __restrict values, S* __restrict scores,
@@ -1052,13 +1052,13 @@ __device__ void tlp_lookup_kernel_hybrid_impl(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = bucket_keys_ptr[possible_pos];
@@ -1081,7 +1081,7 @@ __device__ void tlp_lookup_kernel_hybrid_impl(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;

@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -136,8 +137,8 @@ TEST(GroupSharedMutexTest, AdvancedFunctionalityMultiStream) {
   std::vector<std::thread> reads;
   for (int i = 0; i < 50; ++i) {
     reads.emplace_back([&]() {
-      cudaStream_t stream;
-      CUDA_CHECK(cudaStreamCreate(&stream));
+      hipStream_t stream;
+      CUDA_CHECK(hipStreamCreate(&stream));
 
       read_shared_lock read(mutex);
       EXPECT_TRUE(mutex.read_count() > 0);
@@ -145,8 +146,8 @@ TEST(GroupSharedMutexTest, AdvancedFunctionalityMultiStream) {
       std::this_thread::sleep_for(1000ms);
       ASSERT_EQ(mutex.update_count(), 0);
 
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      CUDA_CHECK(cudaStreamDestroy(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamDestroy(stream));
     });
   }
 
@@ -154,8 +155,8 @@ TEST(GroupSharedMutexTest, AdvancedFunctionalityMultiStream) {
   std::vector<std::thread> updates;
   for (int i = 0; i < 50; ++i) {
     updates.emplace_back([&]() {
-      cudaStream_t stream;
-      CUDA_CHECK(cudaStreamCreate(&stream));
+      hipStream_t stream;
+      CUDA_CHECK(hipStreamCreate(&stream));
 
       update_shared_lock update(mutex);
       EXPECT_TRUE(mutex.update_count() > 0);
@@ -163,8 +164,8 @@ TEST(GroupSharedMutexTest, AdvancedFunctionalityMultiStream) {
       std::this_thread::sleep_for(1000ms);
       ASSERT_EQ(mutex.read_count(), 0);
 
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      CUDA_CHECK(cudaStreamDestroy(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamDestroy(stream));
     });
   }
 
@@ -172,16 +173,16 @@ TEST(GroupSharedMutexTest, AdvancedFunctionalityMultiStream) {
   std::vector<std::thread> uniques;
   for (int i = 0; i < 50; ++i) {
     uniques.emplace_back([&]() {
-      cudaStream_t stream;
-      CUDA_CHECK(cudaStreamCreate(&stream));
+      hipStream_t stream;
+      CUDA_CHECK(hipStreamCreate(&stream));
 
       update_read_lock unique(mutex);
       ASSERT_EQ(mutex.read_count(), 1);
       ASSERT_EQ(mutex.read_count(), 1);
       std::this_thread::sleep_for(100ms);
 
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      CUDA_CHECK(cudaStreamDestroy(stream));
+      CUDA_CHECK(hipStreamSynchronize(stream));
+      CUDA_CHECK(hipStreamDestroy(stream));
     });
   }
 

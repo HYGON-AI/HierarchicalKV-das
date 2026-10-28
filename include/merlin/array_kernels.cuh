@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -16,14 +17,14 @@
 
 #pragma once
 
-#include <cooperative_groups.h>
-#include "cuda_runtime.h"
+#include <hip/hip_cooperative_groups.h>
+#include "hip/hip_runtime.h"
 #include "thrust/device_vector.h"
 #include "thrust/execution_policy.h"
 #include "thrust/scan.h"
 #include "types.cuh"
 #include "utils.cuh"
-
+#include "core_kernels/util.h"
 namespace nv {
 namespace merlin {
 
@@ -47,7 +48,7 @@ __global__ void gpu_cell_count(const bool* masks, Tidx* offsets, size_t n,
       is_existed = true;
     }
   }
-  unsigned int vote = g.ballot(is_existed);
+  unsigned long long vote = g.ballot(is_existed);
   int g_ones = __popc((int)vote);
   if (rank == 0 && tid < n) {
     offsets[tid / TILE_SIZE] = static_cast<Tidx>(g_ones);
@@ -70,8 +71,8 @@ __global__ void gpu_select_kvm_kernel(const bool* masks, size_t n,
       is_existed = true;
     }
   }
-  unsigned int vote = g.ballot(is_existed);
-  unsigned int r_vote = __brev(vote) >> (32 - TILE_SIZE);
+  unsigned long long vote = g.ballot(is_existed);
+  unsigned long long r_vote = __brevll(vote) >> (64 - TILE_SIZE);
   K empty_key = (K)EMPTY_KEY;
 
   if (tid < n) {
@@ -104,20 +105,20 @@ template <typename K, typename V, typename S, typename Tidx, int TILE_SIZE = 8>
 void gpu_boolean_mask(size_t grid_size, size_t block_size, const bool* masks,
                       size_t n, size_t* n_evicted, Tidx* offsets,
                       K* __restrict keys, V* __restrict values,
-                      S* __restrict scores, size_t dim, cudaStream_t stream) {
+                      S* __restrict scores, size_t dim, hipStream_t stream) {
   size_t n_offsets = (n + TILE_SIZE - 1) / TILE_SIZE;
-  gpu_cell_count<Tidx, TILE_SIZE>
-      <<<grid_size, block_size, 0, stream>>>(masks, offsets, n, n_evicted);
+ hipLaunchKernelGGL(( gpu_cell_count<Tidx, TILE_SIZE>)
+      , dim3(grid_size), dim3(block_size), 0, stream, masks, offsets, n, n_evicted);
 #if THRUST_VERSION >= 101600
-  auto policy = thrust::cuda::par_nosync.on(stream);
+  auto policy = thrust::hip::par_nosync.on(stream);
 #else
-  auto policy = thrust::cuda::par.on(stream);
+  auto policy = thrust::hip::par.on(stream);
 #endif
   thrust::device_ptr<Tidx> d_src(offsets);
   thrust::device_ptr<Tidx> d_dest(offsets);
   thrust::exclusive_scan(policy, d_src, d_src + n_offsets, d_dest);
-  gpu_select_kvm_kernel<K, V, S, Tidx, TILE_SIZE>
-      <<<grid_size, block_size, 0, stream>>>(masks, n, offsets, keys, values,
+ hipLaunchKernelGGL(( gpu_select_kvm_kernel<K, V, S, Tidx, TILE_SIZE>)
+      , dim3(grid_size), dim3(block_size), 0, stream, masks, n, offsets, keys, values,
                                              scores, dim);
 }
 

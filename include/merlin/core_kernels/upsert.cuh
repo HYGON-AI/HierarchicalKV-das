@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -93,13 +94,13 @@ __global__ void tlp_v1_upsert_kernel_with_io(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -125,7 +126,7 @@ __global__ void tlp_v1_upsert_kernel_with_io(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -308,13 +309,13 @@ __global__ void tlp_v2_upsert_kernel_with_io(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -339,7 +340,7 @@ __global__ void tlp_v2_upsert_kernel_with_io(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -460,7 +461,7 @@ __global__ void tlp_v2_upsert_kernel_with_io(
   auto sm_values_buffer =
       reinterpret_cast<VecV*>(&(sm_bucket_scores[0][0])) + groupID * GROUP_BUFs;
 
-  auto occupy_result_next = g.shfl(occupy_result, 0);
+  auto occupy_result_next = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), 0));
   if ((occupy_result_next != OccupyResult::ILLEGAL) &&
       (occupy_result_next != OccupyResult::REFUSED)) {
     VecV* dst = sm_values_buffer;
@@ -482,7 +483,7 @@ __global__ void tlp_v2_upsert_kernel_with_io(
       }
     }
     __pipeline_commit();
-    auto occupy_result_cur = g.shfl(occupy_result, i);
+    auto occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i));
     if ((occupy_result_cur != OccupyResult::ILLEGAL) &&
         (occupy_result_cur != OccupyResult::REFUSED)) {
       VecV* src = sm_values_buffer + same_buf(i) * GROUP_BUF;
@@ -568,7 +569,7 @@ __global__ void pipeline_upsert_kernel_with_io(
     const S global_epoch) {
   // Here, GROUP_SIZE * Comp_LEN = BUCKET_SIZE.
   constexpr uint32_t BUCKET_SIZE = 128;
-  constexpr uint32_t GROUP_SIZE = 32;
+  constexpr uint32_t GROUP_SIZE = 64;
   constexpr uint32_t Comp_LEN = sizeof(VecD_Comp) / sizeof(D);
   constexpr uint32_t Load_LEN = sizeof(VecD_Load) / sizeof(D);
   constexpr uint32_t Load_LEN_S = sizeof(byte16) / sizeof(S);
@@ -621,8 +622,8 @@ __global__ void pipeline_upsert_kernel_with_io(
   uint32_t groupID = threadIdx.x / GROUP_SIZE;
 
   // Pipeline loading.
-  auto occupy_result_next = g.shfl(occupy_result, 0);
-  auto keys_ptr_next = g.shfl(bucket_keys_ptr, 0);
+  auto occupy_result_next = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), 0));
+  auto keys_ptr_next = reinterpret_cast<K*>(g.shfl(reinterpret_cast<unsigned long long>(bucket_keys_ptr), 0));
   if (occupy_result_next == OccupyResult::INITIAL) {
     D* sm_bucket_digests = SMM::bucket_digests(smem, groupID, 0);
     D* dst = sm_bucket_digests + rank * Load_LEN;
@@ -639,8 +640,8 @@ __global__ void pipeline_upsert_kernel_with_io(
   for (int32_t i = 0; i < GROUP_SIZE; i++) {
     // Step1: load digests from global memory to shared memory.
     if (i + 1 < GROUP_SIZE) {
-      auto occupy_result_next = g.shfl(occupy_result, i + 1);
-      auto keys_ptr_next = g.shfl(bucket_keys_ptr, i + 1);
+      auto occupy_result_next = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i + 1));
+      auto keys_ptr_next = reinterpret_cast<K*>(g.shfl(reinterpret_cast<unsigned long long>(bucket_keys_ptr), i + 1));
       if (occupy_result_next == OccupyResult::INITIAL) {
         D* sm_bucket_digests = SMM::bucket_digests(smem, groupID, diff_buf(i));
         D* dst = sm_bucket_digests + rank * Load_LEN;
@@ -652,7 +653,7 @@ __global__ void pipeline_upsert_kernel_with_io(
     }
     __pipeline_commit();
     // Step2: to lock the target_key or empty_key by querying digests.
-    auto occupy_result_cur = g.shfl(occupy_result, i);
+    auto occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i));
     if (occupy_result_cur == OccupyResult::INITIAL) {
       uint32_t tx_cur = groupID * GROUP_SIZE + i;
       int** sm_buckets_size_ptr = SMM::buckets_size_ptr(smem);
@@ -660,7 +661,7 @@ __global__ void pipeline_upsert_kernel_with_io(
       K key_cur = g.shfl(key, i);
       auto target_digests_cur = g.shfl(target_digests, i);
       auto start_pos_cur = g.shfl(key_pos, i);
-      auto keys_ptr_cur = g.shfl(bucket_keys_ptr, i);
+      auto keys_ptr_cur = reinterpret_cast<K*>(g.shfl(reinterpret_cast<unsigned long long>(bucket_keys_ptr), i));
       auto bucket_size_cur = *bucket_size_ptr;
       __pipeline_wait_prior(3);
       D* src = SMM::bucket_digests(smem, groupID, same_buf(i));
@@ -669,13 +670,13 @@ __global__ void pipeline_upsert_kernel_with_io(
           Comp_LEN * ((start_offset + rank) & (GROUP_SIZE - 1));
       VecD_Comp probe_digests =
           *reinterpret_cast<VecD_Comp*>(src + probe_offset);
-      uint32_t cmp_result = __vcmpeq4(probe_digests, target_digests_cur);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests_cur);
       cmp_result &= 0x01010101;
       uint32_t possible_pos = 0;
       bool result = false;
       do {
         if (cmp_result == 0) break;
-        int32_t index = (__ffs(cmp_result) - 1) >> 3;
+        int32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = probe_offset + index;
         auto current_key = BUCKET::keys(keys_ptr_cur, possible_pos);
@@ -684,9 +685,9 @@ __global__ void pipeline_upsert_kernel_with_io(
             expected_key, static_cast<K>(LOCKED_KEY),
             cuda::std::memory_order_acquire, cuda::std::memory_order_relaxed);
       } while (!result);
-      uint32_t found_vote = g.ballot(result);
+      unsigned long long found_vote = g.ballot(result);
       if (found_vote) {
-        int32_t src_lane = __ffs(found_vote) - 1;
+        int32_t src_lane = __ffsll(found_vote) - 1;
         possible_pos = g.shfl(possible_pos, src_lane);
         if (rank == i) {
           occupy_result = OccupyResult::DUPLICATE;
@@ -706,7 +707,7 @@ __global__ void pipeline_upsert_kernel_with_io(
           if (rank == offset) {
             do {
               if (cmp_result == 0) break;
-              int32_t index = (__ffs(cmp_result) - 1) >> 3;
+              int32_t index = (__ffsll(cmp_result) - 1) >> 3;
               cmp_result &= (cmp_result - 1);
               possible_pos = probe_offset + index;
               auto current_key = BUCKET::keys(keys_ptr_cur, possible_pos);
@@ -717,9 +718,9 @@ __global__ void pipeline_upsert_kernel_with_io(
                   cuda::std::memory_order_relaxed);
             } while (!result);
           }
-          uint32_t found_vote = g.ballot(result);
+          unsigned long long found_vote = g.ballot(result);
           if (found_vote) {
-            int32_t src_lane = __ffs(found_vote) - 1;
+            int32_t src_lane = __ffsll(found_vote) - 1;
             possible_pos = g.shfl(possible_pos, src_lane);
             if (rank == i) {
               occupy_result = OccupyResult::OCCUPIED_EMPTY;
@@ -736,7 +737,7 @@ __global__ void pipeline_upsert_kernel_with_io(
           }
         }
       }
-      occupy_result_cur = g.shfl(occupy_result, i);
+      occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i));
       if (occupy_result_cur == OccupyResult::INITIAL) {
         S* sm_bucket_scores = SMM::bucket_scores(smem, groupID, same_buf(i));
         S* dst = sm_bucket_scores + rank * Load_LEN_S;
@@ -750,7 +751,7 @@ __global__ void pipeline_upsert_kernel_with_io(
     __pipeline_commit();
     // Step 3: reduce to get the key with the minimum score.
     if (i > 0) {
-      occupy_result_cur = g.shfl(occupy_result, i - 1);
+      occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i - 1));
       uint32_t tx_cur = groupID * GROUP_SIZE + i - 1;
       S* sm_param_scores = SMM::param_scores(smem);
       S score_cur = ScoreFunctor::desired_when_missed(sm_param_scores, tx_cur,
@@ -776,18 +777,18 @@ __global__ void pipeline_upsert_kernel_with_io(
             }
           }
         }
-        const S min_score_global =
-            cg::reduce(g, min_score_local, cg::less<S>());
+        const S min_score_global = warp_reduce_min(min_score_local);
+            // cg::reduce(g, min_score_local, cg::less<S>());
         if (score_cur < min_score_global) {
           if (rank == i - 1) {
             occupy_result = OccupyResult::REFUSED;
           }
-          occupy_result_cur = g.shfl(occupy_result, i - 1);
+          occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i - 1));
           break;
         }
-        uint32_t vote = g.ballot(min_score_local <= min_score_global);
+        unsigned long long vote = g.ballot(min_score_local <= min_score_global);
         if (vote) {
-          int src_lane = __ffs(vote) - 1;
+          int src_lane = __ffsll(vote) - 1;
           int min_pos_global = g.shfl(min_pos_local, src_lane);
           if (rank == i - 1) {
             src[min_pos_global] = static_cast<S>(MAX_SCORE);  // Mark visited.
@@ -825,7 +826,7 @@ __global__ void pipeline_upsert_kernel_with_io(
               }
             }
           }
-          occupy_result_cur = g.shfl(occupy_result, i - 1);
+          occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i - 1));
         }
       }
       // Prefetch values to shared memory.
@@ -841,7 +842,7 @@ __global__ void pipeline_upsert_kernel_with_io(
 
     // Step 4: write values to bucket or param buffer.
     if (i > 1) {
-      occupy_result_cur = g.shfl(occupy_result, i - 2);
+      occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), i - 2));;
       if (occupy_result_cur != OccupyResult::ILLEGAL &&
           occupy_result_cur != OccupyResult::REFUSED) {
         VecV* src = SMM::values_buffer(smem, groupID, same_buf(i), dim);
@@ -859,7 +860,7 @@ __global__ void pipeline_upsert_kernel_with_io(
       }
     }
   }
-  auto occupy_result_cur = g.shfl(occupy_result, GROUP_SIZE - 1);
+  auto occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), GROUP_SIZE - 1));
   uint32_t tx_cur = groupID * GROUP_SIZE + GROUP_SIZE - 1;
   S* sm_param_scores = SMM::param_scores(smem);
   S score_cur =
@@ -885,17 +886,17 @@ __global__ void pipeline_upsert_kernel_with_io(
         }
       }
     }
-    const S min_score_global = cg::reduce(g, min_score_local, cg::less<S>());
+    const S min_score_global = warp_reduce_min(min_score_local);
     if (score_cur < min_score_global) {
       if (rank == GROUP_SIZE - 1) {
         occupy_result = OccupyResult::REFUSED;
       }
-      occupy_result_cur = g.shfl(occupy_result, GROUP_SIZE - 1);
+      occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), GROUP_SIZE - 1));
       break;
     }
-    uint32_t vote = g.ballot(min_score_local <= min_score_global);
+    unsigned long long vote = g.ballot(min_score_local <= min_score_global);
     if (vote) {
-      int src_lane = __ffs(vote) - 1;
+      int src_lane = __ffsll(vote) - 1;
       int min_pos_global = g.shfl(min_pos_local, src_lane);
       if (rank == GROUP_SIZE - 1) {
         src[min_pos_global] = MAX_SCORE;  // Mark visited.
@@ -934,7 +935,7 @@ __global__ void pipeline_upsert_kernel_with_io(
           }
         }
       }
-      occupy_result_cur = g.shfl(occupy_result, GROUP_SIZE - 1);
+      occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), GROUP_SIZE - 1));
     }
   }
   // Prefetch values to shared memory.
@@ -948,7 +949,7 @@ __global__ void pipeline_upsert_kernel_with_io(
   __pipeline_commit();
 
   // Step 4: write values to bucket or param buffer.
-  occupy_result_cur = g.shfl(occupy_result, GROUP_SIZE - 2);
+  occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), GROUP_SIZE - 2));
   if (occupy_result_cur != OccupyResult::ILLEGAL &&
       occupy_result_cur != OccupyResult::REFUSED) {
     VecV* src = SMM::values_buffer(smem, groupID, same_buf(GROUP_SIZE), dim);
@@ -966,7 +967,7 @@ __global__ void pipeline_upsert_kernel_with_io(
   }
 
   // Step 4: write values to bucket or param buffer.
-  occupy_result_cur = g.shfl(occupy_result, GROUP_SIZE - 1);
+  occupy_result_cur = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), GROUP_SIZE - 1));
   if (occupy_result_cur != OccupyResult::ILLEGAL &&
       occupy_result_cur != OccupyResult::REFUSED) {
     VecV* src =
@@ -1019,11 +1020,11 @@ struct Params_Upsert {
 template <typename K, typename V, typename S, typename VecV, int Strategy>
 struct Launch_TLPv1_Upsert {
   using Params = Params_Upsert<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
     params.dim = params.dim * sizeof(V) / sizeof(VecV);
-    tlp_v1_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, Strategy>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+    hipLaunchKernelGGL(( tlp_v1_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, Strategy>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             params.buckets, params.buckets_size, params.buckets_num,
             params.bucket_capacity, params.dim, params.keys,
             reinterpret_cast<const VecV*>(params.values), params.scores,
@@ -1034,25 +1035,25 @@ struct Launch_TLPv1_Upsert {
 template <typename K, typename V, typename S, typename VecV, int Strategy>
 struct Launch_TLPv2_Upsert {
   using Params = Params_Upsert<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
     const uint32_t value_size = params.dim * sizeof(V);
     params.dim = value_size / sizeof(VecV);
 
     if (value_size <= 256) {
-      constexpr int GROUP_SIZE = 8;
-      tlp_v2_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, GROUP_SIZE,
-                                   Strategy>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+      constexpr int GROUP_SIZE = 64;
+      hipLaunchKernelGGL(( tlp_v2_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, GROUP_SIZE,
+                                   Strategy>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_size, params.buckets_num,
               params.bucket_capacity, params.dim, params.keys,
               reinterpret_cast<const VecV*>(params.values), params.scores,
               params.n, params.global_epoch);
     } else {
-      constexpr int GROUP_SIZE = 16;
-      tlp_v2_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, GROUP_SIZE,
-                                   Strategy>
-          <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+      constexpr int GROUP_SIZE = 64;
+      hipLaunchKernelGGL(( tlp_v2_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, GROUP_SIZE,
+                                   Strategy>)
+          , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
               params.buckets, params.buckets_size, params.buckets_num,
               params.bucket_capacity, params.dim, params.keys,
               reinterpret_cast<const VecV*>(params.values), params.scores,
@@ -1064,9 +1065,9 @@ struct Launch_TLPv2_Upsert {
 template <typename K, typename V, typename S, typename VecV, int Strategy>
 struct Launch_Pipeline_Upsert {
   using Params = Params_Upsert<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
-    constexpr uint32_t GROUP_SIZE = 32;
+    constexpr uint32_t GROUP_SIZE = 64;
     constexpr uint32_t BUCKET_SIZE = 128;
     using SMM = SharedMemoryManager_Pipeline_Upsert<K, V, S, VecV, BLOCK_SIZE,
                                                     GROUP_SIZE, BUCKET_SIZE>;
@@ -1075,9 +1076,9 @@ struct Launch_Pipeline_Upsert {
     uint32_t shared_mem = SMM::total_size(params.dim);
     shared_mem =
         (shared_mem + sizeof(byte16) - 1) / sizeof(byte16) * sizeof(byte16);
-    pipeline_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, Strategy>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, shared_mem,
-           stream>>>(params.buckets, params.buckets_size, params.buckets_num,
+    hipLaunchKernelGGL(( pipeline_upsert_kernel_with_io<K, V, S, VecV, BLOCK_SIZE, Strategy>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), shared_mem,
+           stream, params.buckets, params.buckets_size, params.buckets_num,
                      params.dim, params.keys,
                      reinterpret_cast<const VecV*>(params.values),
                      params.scores, params.n, params.global_epoch);
@@ -1110,7 +1111,7 @@ struct KernelSelector_Upsert {
     constexpr uint32_t MinBucketCap = sizeof(VecD_Load) / sizeof(D);
     if (!unique_key || bucket_size < MinBucketCap) return false;
     uint32_t value_size = dim * sizeof(V);
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11030)
+#if defined(DTKRT_VERSION) && (DTKRT_VERSION >= 11030)
     if (value_size <= ValueConfig::size_tlp_v2) return true;
 #else
     if (value_size <= ValueConfig::size_tlp_v1) return true;
@@ -1118,7 +1119,7 @@ struct KernelSelector_Upsert {
     return false;
   }
 
-  static void select_kernel(Params& params, cudaStream_t& stream) {
+  static void select_kernel(Params& params, hipStream_t& stream) {
     const uint32_t total_value_size =
         static_cast<uint32_t>(params.dim * sizeof(V));
 
@@ -1146,7 +1147,7 @@ struct KernelSelector_Upsert {
       }
     };
 
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11030)
+#if defined(DTKRT_VERSION) && (DTKRT_VERSION >= 11030)
     auto launch_TLPv2 = [&]() {
       if (total_value_size % sizeof(byte16) == 0) {
         using VecV = byte16;
@@ -1201,7 +1202,7 @@ struct KernelSelector_Upsert {
       if (total_value_size <= ValueConfig::size_tlp_v1) {
         launch_TLPv1();
       } else {
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11030)
+#if defined(DTKRT_VERSION) && (DTKRT_VERSION >= 11030)
         launch_TLPv2();
 #else
         launch_TLPv1();
@@ -1212,24 +1213,24 @@ struct KernelSelector_Upsert {
         if (params.load_factor <= 0.98f) {
           launch_TLPv1();
         } else {
-          launch_Pipeline();
+          launch_TLPv1();
         }
       } else {
         if (params.load_factor <= 0.95f) {
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11030)
+#if defined(DTKRT_VERSION) && (DTKRT_VERSION >= 11030)
           launch_TLPv2();
 #else
-          launch_Pipeline();
+          launch_TLPv1();
 #endif
         } else {
-          launch_Pipeline();
+          launch_TLPv1();
         }
       }
     }
   }  // End function
 };
 
-template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 64>
 __global__ void upsert_kernel_with_io_core(
     const Table<K, V, S>* __restrict table, Bucket<K, V, S>* buckets,
     const size_t bucket_max_size, const size_t buckets_num, const size_t dim,
@@ -1279,7 +1280,7 @@ __global__ void upsert_kernel_with_io_core(
             key_pos, src_lane, bucket_max_size);
       }
 
-      occupy_result = g.shfl(occupy_result, src_lane);
+      occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
     } while (occupy_result == OccupyResult::CONTINUE);
 
     if (occupy_result == OccupyResult::REFUSED) {
@@ -1309,34 +1310,34 @@ struct SelectUpsertKernelWithIO {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              const V* __restrict values,
                              const S* __restrict scores, const S global_epoch) {
     if (load_factor <= 0.5) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, global_epoch, N);
 
     } else if (load_factor <= 0.875) {
-      const unsigned int tile_size = 8;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, global_epoch, N);
     } else {
-      const unsigned int tile_size = 32;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( upsert_kernel_with_io_core<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, buckets, bucket_max_size, buckets_num, dim, keys, values,
               scores, global_epoch, N);
     }
@@ -1423,13 +1424,13 @@ __global__ void upsert_kernel_lock_key_hybrid(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -1454,7 +1455,7 @@ __global__ void upsert_kernel_lock_key_hybrid(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -1569,6 +1570,7 @@ __global__ void upsert_kernel_lock_key_hybrid(
 }
 
 template <class K, class V, class S>
+__launch_bounds__(1024)
 __global__ void write_kernel_unlock_key(const V* __restrict src,
                                         V** __restrict dst,
                                         const int* __restrict src_offset,
@@ -1596,7 +1598,7 @@ __global__ void write_kernel_unlock_key(const V* __restrict src,
 
 /* Upsert with the end-user specified score.
  */
-template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 64>
 __global__ void upsert_kernel(const Table<K, V, S>* __restrict table,
                               Bucket<K, V, S>* buckets,
                               const size_t bucket_max_size,
@@ -1647,7 +1649,7 @@ __global__ void upsert_kernel(const Table<K, V, S>* __restrict table,
             key_pos, src_lane, bucket_max_size);
       }
 
-      occupy_result = g.shfl(occupy_result, src_lane);
+      occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
     } while (occupy_result == OccupyResult::CONTINUE);
 
     if (occupy_result == OccupyResult::REFUSED) continue;

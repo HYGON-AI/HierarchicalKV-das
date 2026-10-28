@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -80,13 +81,13 @@ __global__ void tlp_update_values_kernel_with_io(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -113,7 +114,7 @@ __global__ void tlp_update_values_kernel_with_io(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -218,7 +219,7 @@ __global__ void pipeline_update_values_kernel_with_io(
     VecD_Comp probing_digests = *reinterpret_cast<VecD_Comp*>(
         &sm_digests[groupID][same_buf(i) * BUCKET_SIZE + rank * Comp_LEN]);
     uint32_t find_result_ = __vcmpeq4(probing_digests, target_digests);
-    uint32_t find_result = 0;
+    unsigned long long find_result = 0;
     if ((find_result_ & 0x01) != 0) find_result |= 0x01;
     if ((find_result_ & 0x0100) != 0) find_result |= 0x02;
     if ((find_result_ & 0x010000) != 0) find_result |= 0x04;
@@ -237,11 +238,11 @@ __global__ void pipeline_update_values_kernel_with_io(
       group_base = atomicAdd(sm_counts + key_idx_block, find_number);
     }
     bool gt_reserve = (group_base + find_number) > RESERVE;
-    int gt_vote = g.ballot(gt_reserve);
+    unsigned long long gt_vote = g.ballot(gt_reserve);
     K* key_ptr = sm_keys_ptr[key_idx_block];
     if (gt_vote == 0) {
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -260,10 +261,10 @@ __global__ void pipeline_update_values_kernel_with_io(
     } else {
       K target_key = sm_target_keys[key_idx_block];
       sm_counts[key_idx_block] = 0;
-      int found_vote = 0;
+      unsigned long long found_vote = 0;
       bool found = false;
       do {
-        int digest_idx = __ffs(find_result) - 1;
+        int digest_idx = __ffsll(find_result) - 1;
         if (digest_idx >= 0) {
           find_result &= (find_result - 1);
           int key_pos = digest_idx < 4
@@ -317,9 +318,9 @@ __global__ void pipeline_update_values_kernel_with_io(
           }
         }
       }
-      int found_vote = g.ballot(found_flag);
+      unsigned long long found_vote = g.ballot(found_flag);
       if (found_vote) {
-        int src_lane = __ffs(found_vote) - 1;
+        int src_lane = __ffsll(found_vote) - 1;
         int target_pos = g.shfl(key_pos, src_lane);
         sm_position[key_idx_block] = target_pos;
         int key_idx_grid = blockIdx.x * blockDim.x + key_idx_block;
@@ -388,9 +389,9 @@ __global__ void pipeline_update_values_kernel_with_io(
         }
       }
     }
-    int found_vote = g.ballot(found_flag);
+    unsigned long long found_vote = g.ballot(found_flag);
     if (found_vote) {
-      int src_lane = __ffs(found_vote) - 1;
+      int src_lane = __ffsll(found_vote) - 1;
       int target_pos = g.shfl(key_pos, src_lane);
       sm_position[key_idx_block] = target_pos;
       int key_idx_grid = blockIdx.x * blockDim.x + key_idx_block;
@@ -487,11 +488,11 @@ struct Params_UpdateValues {
 template <typename K, typename V, typename S, typename VecV>
 struct Launch_TLP_UpdateValues {
   using Params = Params_UpdateValues<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
     params.dim = params.dim * sizeof(V) / sizeof(VecV);
-    tlp_update_values_kernel_with_io<K, V, S, VecV, BLOCK_SIZE>
-        <<<(params.n + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
+    hipLaunchKernelGGL(( tlp_update_values_kernel_with_io<K, V, S, VecV, BLOCK_SIZE>)
+        , dim3((params.n + BLOCK_SIZE - 1) / BLOCK_SIZE), dim3(BLOCK_SIZE), 0, stream, 
             params.buckets, params.buckets_num, params.bucket_capacity,
             params.dim, params.keys,
             reinterpret_cast<const VecV*>(params.values), params.n);
@@ -501,9 +502,9 @@ struct Launch_TLP_UpdateValues {
 template <typename K, typename V, typename S, typename VecV>
 struct Launch_Pipeline_UpdateValues {
   using Params = Params_UpdateValues<K, V, S>;
-  inline static void launch_kernel(Params& params, cudaStream_t& stream) {
+  inline static void launch_kernel(Params& params, hipStream_t& stream) {
     constexpr int BLOCK_SIZE = 128;
-    constexpr uint32_t GROUP_SIZE = 16;
+    constexpr uint32_t GROUP_SIZE = 64;
     constexpr uint32_t GROUP_NUM = BLOCK_SIZE / GROUP_SIZE;
 
     params.dim = params.dim * sizeof(V) / sizeof(VecV);
@@ -556,7 +557,7 @@ struct KernelSelector_UpdateValues {
     return false;
   }
 
-  static void select_kernel(Params& params, cudaStream_t& stream) {
+  static void select_kernel(Params& params, hipStream_t& stream) {
     const uint32_t total_value_size =
         static_cast<uint32_t>(params.dim * sizeof(V));
 
@@ -610,10 +611,10 @@ struct KernelSelector_UpdateValues {
         if (params.load_factor <= 0.60f) {
           launch_TLP();
         } else {
-          launch_Pipeline();
+          launch_TLP();
         }
       } else {
-        launch_Pipeline();
+          launch_TLP();
       }
     }
   }  // End function
@@ -658,7 +659,7 @@ __global__ void update_values_kernel_with_io(
     occupy_result = find_and_lock_for_update<K, V, S, TILE_SIZE>(
         g, bucket, update_key, start_idx, key_pos, src_lane, bucket_max_size);
 
-    occupy_result = g.shfl(occupy_result, src_lane);
+    occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
 
     if (occupy_result == OccupyResult::REFUSED) continue;
 
@@ -679,24 +680,24 @@ struct SelectUpdateValuesKernelWithIO {
   static void execute_kernel(const float& load_factor, const int& block_size,
                              const size_t bucket_max_size,
                              const size_t buckets_num, const size_t dim,
-                             cudaStream_t& stream, const size_t& n,
+                             hipStream_t& stream, const size_t& n,
                              const Table<K, V, S>* __restrict table,
                              Bucket<K, V, S>* buckets, const K* __restrict keys,
                              const V* __restrict values) {
     if (load_factor <= 0.75) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      update_values_kernel_with_io<K, V, S, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(table, buckets,
+     hipLaunchKernelGGL(( update_values_kernel_with_io<K, V, S, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, table, buckets,
                                                  bucket_max_size, buckets_num,
                                                  dim, keys, values, N);
     } else {
-      const unsigned int tile_size = 32;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      update_values_kernel_with_io<K, V, S, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(table, buckets,
+     hipLaunchKernelGGL(( update_values_kernel_with_io<K, V, S, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, table, buckets,
                                                  bucket_max_size, buckets_num,
                                                  dim, keys, values, N);
     }
@@ -763,13 +764,13 @@ __global__ void tlp_update_values_kernel_hybrid(
       // Perform a vectorized comparison by byte,
       // and if they are equal, set the corresponding byte in the result to
       // 0xff.
-      int cmp_result = __vcmpeq4(probe_digests, target_digests);
+      unsigned long long cmp_result = __vcmpeq4(probe_digests, target_digests);
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
         // CUDA uses little endian,
         // and the lowest byte in register stores in the lowest address.
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         auto current_key = BUCKET::keys(bucket_keys_ptr, possible_pos);
@@ -791,7 +792,7 @@ __global__ void tlp_update_values_kernel_hybrid(
       cmp_result &= 0x01010101;
       do {
         if (cmp_result == 0) break;
-        uint32_t index = (__ffs(cmp_result) - 1) >> 3;
+        uint32_t index = (__ffsll(cmp_result) - 1) >> 3;
         cmp_result &= (cmp_result - 1);
         possible_pos = pos_cur + i * 4 + index;
         if (offset == 0 && possible_pos < key_pos) continue;
@@ -842,7 +843,7 @@ __global__ void update_values_kernel(const Table<K, V, S>* __restrict table,
     occupy_result = find_and_lock_for_update<K, V, S, TILE_SIZE>(
         g, bucket, update_key, start_idx, key_pos, src_lane, bucket_max_size);
 
-    occupy_result = g.shfl(occupy_result, src_lane);
+    occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
 
     if (occupy_result == OccupyResult::REFUSED) continue;
 

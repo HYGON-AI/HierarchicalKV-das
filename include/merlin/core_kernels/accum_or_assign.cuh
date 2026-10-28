@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
  * Copyright (c) 2023, NVIDIA CORPORATION.
  *
@@ -21,7 +22,7 @@
 namespace nv {
 namespace merlin {
 
-template <class V, uint32_t TILE_SIZE = 4>
+template <class V, uint32_t TILE_SIZE = 64>
 __device__ __forceinline__ void accum_or_assign_vector(
     cg::thread_block_tile<TILE_SIZE> const& g, const V* delta_or_val, V* dst,
     const bool is_accum, const size_t dim) {
@@ -79,7 +80,7 @@ __global__ void write_with_accum_kernel(const V* __restrict delta_or_val,
  * update with IO operation. This kernel is
  * usually used for the pure HBM mode for better performance.
  */
-template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 64>
 __global__ void accum_or_assign_kernel_with_io(
     const Table<K, V, S>* __restrict table, const size_t bucket_max_size,
     const size_t buckets_num, const size_t dim, const K* __restrict keys,
@@ -131,7 +132,7 @@ __global__ void accum_or_assign_kernel_with_io(
             key_pos, src_lane, bucket_max_size);
       }
 
-      occupy_result = g.shfl(occupy_result, src_lane);
+      occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
     } while (occupy_result == OccupyResult::CONTINUE);
 
     if (occupy_result == OccupyResult::REFUSED) continue;
@@ -178,24 +179,24 @@ struct SelectAccumOrAssignKernelWithIO {
   static void execute_kernel(
       const float& load_factor, const int& block_size,
       const size_t bucket_max_size, const size_t buckets_num, const size_t dim,
-      cudaStream_t& stream, const size_t& n,
+      hipStream_t& stream, const size_t& n,
       const Table<K, V, S>* __restrict table, const K* __restrict keys,
       const V* __restrict value_or_deltas, const S* __restrict scores,
       const bool* __restrict accum_or_assigns, const S global_epoch) {
     if (load_factor <= 0.75) {
-      const unsigned int tile_size = 4;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      accum_or_assign_kernel_with_io<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( accum_or_assign_kernel_with_io<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, bucket_max_size, buckets_num, dim, keys, value_or_deltas,
               scores, accum_or_assigns, global_epoch, N);
     } else {
-      const unsigned int tile_size = 32;
+      const unsigned int tile_size = 64;
       const size_t N = n * tile_size;
       const size_t grid_size = SAFE_GET_GRID_SIZE(N, block_size);
-      accum_or_assign_kernel_with_io<K, V, S, Strategy, tile_size>
-          <<<grid_size, block_size, 0, stream>>>(
+     hipLaunchKernelGGL(( accum_or_assign_kernel_with_io<K, V, S, Strategy, tile_size>)
+          , dim3(grid_size), dim3(block_size), 0, stream, 
               table, bucket_max_size, buckets_num, dim, keys, value_or_deltas,
               scores, accum_or_assigns, global_epoch, N);
     }
@@ -203,7 +204,7 @@ struct SelectAccumOrAssignKernelWithIO {
   }
 };
 
-template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 4>
+template <class K, class V, class S, int Strategy, uint32_t TILE_SIZE = 64>
 __global__ void accum_or_assign_kernel(
     const Table<K, V, S>* __restrict table, const size_t bucket_max_size,
     const size_t buckets_num, const size_t dim, const K* __restrict keys,
@@ -258,7 +259,7 @@ __global__ void accum_or_assign_kernel(
             key_pos, src_lane, bucket_max_size);
       }
 
-      occupy_result = g.shfl(occupy_result, src_lane);
+      occupy_result = static_cast<OccupyResult>(g.shfl(static_cast<int>(occupy_result), src_lane));
     } while (occupy_result == OccupyResult::CONTINUE);
 
     if (occupy_result == OccupyResult::REFUSED) continue;
