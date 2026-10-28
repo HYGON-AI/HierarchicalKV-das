@@ -574,3 +574,6 @@ The unmodified upstream README at the fixed baseline is retained in [README_ORIG
 - `tests/merlin_hashtable_test.cc.hip`
 - `tests/reserved_keys_test.cc.hip`
 - `tests/save_and_load_test.cc.hip`
+- `CMakeLists.txt`
+- `benchmark/find_with_missed_keys_benchmark.cc.hip`
+- `benchmark/merlin_hashtable_benchmark.cc.hip`
