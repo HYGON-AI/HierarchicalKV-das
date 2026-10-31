@@ -22,7 +22,6 @@ find_package(HIP REQUIRED)
 add_definitions(-D__HIPCC__=1)
 add_definitions(-D__HIP__=1)
 add_definitions(-D__HIP_CLANG_ONLY__=1)
-add_compile_definitions(DCU_ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)

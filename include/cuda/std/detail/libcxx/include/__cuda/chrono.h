@@ -5,6 +5,8 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 // SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// Modified by Hygon Information Technology Co., Ltd.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,8 +64,13 @@ system_clock::time_point system_clock::now() _NOEXCEPT
 #if defined(_LIBCUDACXX_EXPERIMENTAL_CHRONO_HIP)
     if(!(hip_gpu_ext::__unix_sysclock0_host_ticks>=0)) {
         // FIXME(HIP): As this function needs to be NOEXCEPT, we can't throw an exception at this point.
-        printf("ERROR: Using sysclock on AMD GPUs requires a prior initialization call on the host side (cuda::std::chrono::hip_gpu_ext::initialize_amdgpu_sysclock_on_current_device())."
-             "The returned time point will not be a UNIX timestamp.\n");
+        #ifndef DAS_ADAPT
+            printf("ERROR: Using sysclock on HCU GPUs requires a prior initialization call on the host side (cuda::std::chrono::hip_gpu_ext::initialize_hcugpu_sysclock_on_current_device())."
+                "The returned time point will not be a UNIX timestamp.\n");
+        #else
+            printf("ERROR: Using sysclock on AMD GPUs requires a prior initialization call on the host side (cuda::std::chrono::hip_gpu_ext::initialize_amdgpu_sysclock_on_current_device())."
+                "The returned time point will not be a UNIX timestamp.\n");
+        #endif
     }
     // FIXME(HIP): This compilation path uses a workaround to make a UNIX timestamp counter available on the device.
     // see header "detail/libcxx/include/support/hip/chrono_hip_extension.h" for more details. 
