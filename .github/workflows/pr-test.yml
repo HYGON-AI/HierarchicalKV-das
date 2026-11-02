@@ -87,7 +87,7 @@ jobs:
           source /opt/dtk/env.sh
           set -u
           cd build
-          # 串行执行以减少显存争用，不运行 benchmark。
+          # 串行执行全部测试以减少显存争用，不运行 benchmark。
           tests=(
             accum_or_assign_test
             assign_score_test
