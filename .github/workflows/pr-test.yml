@@ -34,6 +34,7 @@ jobs:
       group: ci-general
       labels: [self-hosted, ci, bw1000]
     timeout-minutes: 240
+    # 两套 DTK 环境各自编译并运行同一组测试。
     strategy:
       fail-fast: false
       matrix:
