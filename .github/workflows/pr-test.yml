@@ -19,7 +19,7 @@ defaults:
 
 jobs:
   test:
-    name: Build and Test (BW1000 / DTK2604)
+    name: Build and Test (BW1000 / DTK${{ matrix.dtk }})
     # 沿用 spconv-das：外部 fork 仅在维护者打 ready-hcu 标签的当次运行。
     # 后续新提交需复核、移除并重新打标签。
     if: >-
@@ -28,15 +28,23 @@ jobs:
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
        github.event.action == 'labeled')
     concurrency:
-      group: hierarchicalkv-pr-test-${{ github.event.pull_request.number }}
+      group: hierarchicalkv-pr-test-${{ github.event.pull_request.number }}-dtk${{ matrix.dtk }}
       cancel-in-progress: true
     runs-on:
       group: ci-general
       labels: [self-hosted, ci, bw1000]
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dtk: "2604"
+            image: BASE_IMAGE_UBUNTU_DTK2604_PY310
+          - dtk: "2610"
+            image: BASE_IMAGE_UBUNTU_DTK2610_PY312
     container:
       # 已包含 DTK，无需安装 DTK、torch 或打包工具。
-      image: ${{ vars.BASE_IMAGE_UBUNTU_DTK2604_PY310 }}
+      image: ${{ vars[matrix.image] }}
       volumes:
         - /opt/hyhal/:/opt/hyhal/:ro
       options: >-
